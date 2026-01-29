@@ -14,13 +14,17 @@ const isMissingTableError = (error: any) => {
   return error?.message?.includes('schema cache') || error?.message?.includes('does not exist');
 };
 
-export const upsertProfile = async (userId: string, name: string) => {
+/**
+ * Salva ou atualiza o perfil básico do usuário
+ */
+export const upsertProfile = async (userId: string, name: string, avatarUrl?: string) => {
   try {
     const { error } = await supabase
       .from('profiles')
       .upsert({ 
         id: userId, 
         name: name.toUpperCase(), 
+        avatar_url: avatarUrl || `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
         last_seen: new Date().toISOString() 
       }, { onConflict: 'id' });
     
@@ -31,6 +35,9 @@ export const upsertProfile = async (userId: string, name: string) => {
   }
 };
 
+/**
+ * Atualiza dados específicos como Foto e Nickname
+ */
 export const updateProfileData = async (userId: string, data: { name?: string, avatar_url?: string }) => {
   try {
     const { error } = await supabase
@@ -160,12 +167,8 @@ export const joinRoomChannel = (
       onMessage(event, payload);
     })
     .subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        resolve(activeChannel!);
-      }
-      if (status === 'CHANNEL_ERROR') {
-        reject(new Error("Falha ao sintonizar frequência"));
-      }
+      if (status === 'SUBSCRIBED') resolve(activeChannel!);
+      if (status === 'CHANNEL_ERROR') reject(new Error("Falha ao sintonizar frequência"));
     });
   });
 };
@@ -183,9 +186,7 @@ export const joinUserChannel = (
     .on('broadcast', { event: '*' }, ({ event, payload }) => {
       onMessage(event, payload);
     })
-    .subscribe(() => {
-      resolve(userChannel!);
-    });
+    .subscribe(() => resolve(userChannel!));
   });
 };
 

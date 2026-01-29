@@ -13,7 +13,7 @@ import {
   MessageCircle, Send, X, User as UserIcon, ShieldAlert, Heart,
   ChevronRight, Swords, Radio, AlertCircle, DoorOpen, Power,
   Keyboard, UserPlus, Check, Bell, Search, Database, Copy, Globe, Info, Fingerprint,
-  AlertTriangle, Terminal, Edit3, Image as ImageIcon, LayoutGrid
+  AlertTriangle, Terminal, Edit3, Image as ImageIcon, LayoutGrid, Plus
 } from 'lucide-react';
 
 const GAME_TIPS = [
@@ -138,7 +138,7 @@ export default function App() {
         }
       });
       loadAllData();
-      upsertProfile(currentUser.id, currentUser.name);
+      upsertProfile(currentUser.id, currentUser.name, currentUser.avatar);
     }
   }, [currentUser]);
 
@@ -146,7 +146,16 @@ export default function App() {
     if (!currentUser) return;
     const profileRes = await fetchProfile(currentUser.id);
     if (profileRes.data) {
-      setCurrentUser(prev => prev ? ({ ...prev, name: profileRes.data.name, avatar: profileRes.data.avatar_url }) : null);
+      setCurrentUser(prev => prev ? ({ 
+        ...prev, 
+        name: profileRes.data.name, 
+        avatar: profileRes.data.avatar_url,
+        stats: {
+          wins: profileRes.data.wins,
+          matches: profileRes.data.matches,
+          totalScore: profileRes.data.total_score
+        }
+      }) : null);
       setEditName(profileRes.data.name);
       setEditAvatar(profileRes.data.avatar_url || '');
     }
@@ -156,8 +165,9 @@ export default function App() {
   };
 
   const loadRanking = async () => {
-    const { data } = await fetchGlobalRanking();
-    setGlobalRanking(data);
+    const { data, error } = await fetchGlobalRanking();
+    if (error && error.includes('schema cache')) setDbError('MISSING_TABLES');
+    else setGlobalRanking(data);
   };
 
   const loadFriends = async () => {
@@ -179,7 +189,7 @@ export default function App() {
       name: supabaseUser.user_metadata.name || "PLAYER",
       email: supabaseUser.email,
       isGuest: false,
-      avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=' + supabaseUser.id,
+      avatar: supabaseUser.user_metadata.avatar_url || 'https://api.dicebear.com/7.x/avataaars/svg?seed=' + supabaseUser.id,
       level: 1, xp: 0, stats: { wins: 0, matches: 0, totalScore: 0 }
     });
   };
@@ -192,18 +202,155 @@ export default function App() {
       avatar_url: editAvatar 
     });
     if (res.success) {
+      // Atualiza localmente para feedback instantâneo
+      setCurrentUser(prev => prev ? ({ ...prev, name: editName.toUpperCase(), avatar: editAvatar }) : null);
       alert("Perfil atualizado com sucesso!");
-      loadAllData();
     } else {
       alert("Erro ao atualizar perfil.");
     }
     setIsUpdatingProfile(false);
   };
 
-  // Nav Logic
-  const renderNavView = () => {
-    if (gameState.view !== 'Welcome') return null; // Não mostra nav em jogo ou lobby
+  const handleCreateRoom = async () => {
+    if (!currentUser) return;
+    const code = Math.random().toString(36).substring(2, 6).toUpperCase();
+    setLoading(true);
+    setLoadingMsg('Sincronizando Frequência do Squad...');
+    try {
+      await joinRoomChannel(code, handleRealtimeMessage);
+      const player: Player = { 
+        id: currentUser.id, 
+        name: currentUser.name, 
+        is_host: true, 
+        hp: 100, 
+        score: 0, 
+        hasAnswered: false, 
+        lastAnswerIdx: null, 
+        isReady: true,
+        avatar: currentUser.avatar
+      };
+      setGameState(s => ({ ...s, view: 'Lobby', roomCode: code, players: [player], difficulty: selectedDifficulty }));
+    } catch (e) { alert("Erro ao criar sala."); }
+    setLoading(false);
+  };
 
+  const handleJoinRoom = async (code: string) => {
+    if (!code || !currentUser) return;
+    if (code.length < 4) return alert("Insira o código de 4 dígitos!");
+    setLoading(true);
+    setLoadingMsg('Localizando Coordenadas do Squad...');
+    try {
+      await joinRoomChannel(code, handleRealtimeMessage);
+      broadcastEvent(code, 'JOIN_REQUEST', { id: currentUser.id, name: currentUser.name, avatar: currentUser.avatar });
+      setGameState(s => ({ ...s, view: 'Lobby', roomCode: code }));
+      setInvites(prev => prev.filter(inv => inv.roomCode !== code));
+    } catch (e) { alert("Erro ao conectar."); }
+    setLoading(false);
+  };
+
+  const handleRealtimeMessage = (event: string, payload: any) => {
+    const current = gameStateRef.current;
+    switch (event) {
+      case 'SYNC_STATE': setGameState(s => ({ ...s, ...payload })); break;
+      case 'ROOM_CLOSED': alert("Squad encerrado."); resetLocalState(); break;
+      case 'JOIN_REQUEST':
+        if (current.players.find(p => p.id === currentUser?.id)?.is_host) {
+          if (!current.players.find(p => p.id === payload.id)) {
+            const newPlayers = [...current.players, { ...payload, is_host: false, hp: 100, score: 0, hasAnswered: false, lastAnswerIdx: null, isReady: false }];
+            updateAndBroadcast({ players: newPlayers });
+          }
+        }
+        break;
+    }
+  };
+
+  const resetLocalState = () => {
+    setGameState({ view: 'Welcome', phase: 'Question', roomCode: null, players: [], currentRound: 0, currentQuestion: null, difficulty: 'Médio' });
+    setMessages([]);
+  };
+
+  const updateAndBroadcast = (newState: Partial<GameState>) => {
+    setGameState(s => {
+      const merged = { ...s, ...newState };
+      if (s.roomCode) broadcastEvent(s.roomCode, 'SYNC_STATE', merged);
+      return merged;
+    });
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setCurrentUser(null);
+    resetLocalState();
+    setCurrentNav('play');
+  };
+
+  const inviteFriend = async (friendId: string) => {
+    if (!gameState.roomCode || !currentUser) return;
+    await sendPrivateMessage(friendId, 'SQUAD_INVITE', {
+      roomCode: gameState.roomCode,
+      senderName: currentUser.name
+    });
+    alert("Convite enviado!");
+  };
+
+  const handleAddFriend = async (friendId: string) => {
+    if (!currentUser) return;
+    const { success, error } = await addFriendDB(currentUser.id, friendId);
+    if (success) {
+      alert("Operador adicionado!");
+      loadFriends();
+    } else {
+      alert("Erro ao adicionar: " + error);
+    }
+  };
+
+  const handleGuest = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authName) return;
+    const guestUser: User = {
+      id: 'guest_' + Math.random().toString(36).substr(2, 9),
+      name: authName.toUpperCase(),
+      isGuest: true,
+      level: 1,
+      xp: 0,
+      stats: { wins: 0, matches: 0, totalScore: 0 },
+      avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=' + authName
+    };
+    setCurrentUser(guestUser);
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError(null);
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: authEmail,
+      password: authPassword,
+    });
+    if (error) setAuthError(error.message);
+    else if (data.user) mapSessionUser(data.user);
+    setAuthLoading(false);
+  };
+
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError(null);
+    const { data, error } = await supabase.auth.signUp({
+      email: authEmail,
+      password: authPassword,
+      options: { data: { name: authName.toUpperCase() } }
+    });
+    if (error) setAuthError(error.message);
+    else {
+      alert("Cadastro realizado! Confirme seu e-mail.");
+      setAuthMode('login');
+    }
+    setAuthLoading(false);
+  };
+
+  const renderNavView = () => {
+    if (gameState.view !== 'Welcome') return null;
     switch (currentNav) {
       case 'ranking': return renderRanking();
       case 'social': return renderSocial();
@@ -214,6 +361,16 @@ export default function App() {
 
   const renderHome = () => (
     <div className="flex-1 flex flex-col justify-center space-y-8 animate-fade-up max-w-lg mx-auto w-full px-6">
+      {dbError === 'MISSING_TABLES' && (
+        <div className="bg-amber-50 border-2 border-amber-200 p-4 rounded-3xl flex items-start gap-3 animate-shake">
+          <AlertTriangle className="text-amber-600 shrink-0" size={24}/>
+          <div className="space-y-1">
+            <p className="text-[10px] font-bold text-amber-900 uppercase tracking-widest">Atenção Comandante</p>
+            <p className="text-[10px] text-amber-700 font-medium leading-relaxed">O banco de dados não foi detectado. Execute o script <b>setup.sql</b> no Supabase.</p>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-[2.5rem] p-8 shadow-2xl border border-white space-y-6">
         <div className="flex items-center gap-3"><ShieldAlert className="text-blue-600" size={24}/><h3 className="text-xs font-bold uppercase tracking-widest text-slate-400">Dificuldade da Missão</h3></div>
         <div className="grid grid-cols-3 gap-3">
@@ -229,7 +386,7 @@ export default function App() {
                <h3 className="text-2xl font-bungee mb-1">CRIAR SQUAD</h3>
                <p className="text-blue-400 text-[10px] font-bold uppercase tracking-widest">Lidere sua equipe</p>
             </div>
-            <div className="relative z-10 w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center border-4 border-slate-800"><Users size={28}/></div>
+            <div className="relative z-10 w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center border-4 border-slate-800"><Plus size={28}/></div>
          </button>
 
          <div className="bg-white rounded-[2.5rem] p-6 shadow-2xl border border-white space-y-6">
@@ -247,18 +404,16 @@ export default function App() {
       <div className="text-center space-y-2">
         <Trophy className="mx-auto text-orange-500" size={48}/>
         <h2 className="text-3xl font-bungee text-slate-900">RANKING GLOBAL</h2>
-        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Os melhores operadores do servidor</p>
       </div>
-
       <div className="space-y-3">
         {globalRanking.map((p, i) => (
-          <div key={p.id} className={`flex items-center justify-between p-5 bg-white rounded-3xl border-2 transition-all ${i === 0 ? 'border-orange-200 shadow-orange-100 shadow-xl' : 'border-white shadow-lg'}`}>
+          <div key={p.id} className={`flex items-center justify-between p-5 bg-white rounded-3xl border-2 transition-all ${i === 0 ? 'border-orange-200 shadow-xl' : 'border-white shadow-lg'}`}>
             <div className="flex items-center gap-4">
               <span className={`font-bungee text-xl w-8 text-center ${i === 0 ? 'text-orange-500' : 'text-slate-300'}`}>{i + 1}</span>
-              <img src={p.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${p.id}`} className="w-12 h-12 rounded-xl bg-slate-100 border-2 border-white shadow-sm" />
+              <img src={p.avatar_url} className="w-12 h-12 rounded-xl bg-slate-100 border-2 border-white shadow-sm object-cover" />
               <div className="flex flex-col">
-                <span className="font-bold text-slate-800">{p.name}</span>
-                <span className="text-[9px] font-bold text-blue-500 uppercase">{p.wins} Vitórias</span>
+                <span className="font-bold text-slate-800 text-sm">{p.name}</span>
+                <span className="text-[9px] font-bold text-blue-500 uppercase">{p.wins} WINS</span>
               </div>
             </div>
             <div className="text-right">
@@ -276,36 +431,28 @@ export default function App() {
        <div className="text-center space-y-4">
          <div className="relative inline-block group">
            <img src={editAvatar || currentUser?.avatar} className="w-32 h-32 rounded-[2.5rem] mx-auto border-4 border-white shadow-2xl object-cover bg-slate-200" />
-           <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+           <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
              <div className="bg-black/40 p-2 rounded-xl text-white"><Edit3 size={20}/></div>
            </div>
          </div>
-         <div>
-           <h2 className="text-3xl font-bungee text-slate-900">{currentUser?.name}</h2>
-           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Editar Identidade do Operador</p>
-         </div>
+         <h2 className="text-3xl font-bungee text-slate-900">{currentUser?.name}</h2>
        </div>
-
        <div className="bg-white rounded-[2.5rem] p-8 shadow-2xl border border-white space-y-6">
          <div className="space-y-4">
-           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 flex items-center gap-2"><UserIcon size={12}/> Nickname do Squad</label>
+           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 flex items-center gap-2"><UserIcon size={12}/> Nickname</label>
            <input type="text" value={editName} onChange={e => setEditName(e.target.value.toUpperCase())} maxLength={12} className="w-full bg-slate-50 border-2 border-slate-100 p-4 rounded-2xl font-bold text-slate-700 focus:border-blue-500 outline-none transition-all" />
          </div>
-
          <div className="space-y-4">
-           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 flex items-center gap-2"><ImageIcon size={12}/> Link da Foto de Perfil</label>
-           <input type="text" value={editAvatar} onChange={e => setEditAvatar(e.target.value)} placeholder="https://exemplo.com/foto.png" className="w-full bg-slate-50 border-2 border-slate-100 p-4 rounded-2xl font-medium text-slate-700 focus:border-blue-500 outline-none transition-all text-xs" />
-           <p className="text-[9px] text-slate-400 italic">* Use links diretos para imagens (.jpg, .png, .svg)</p>
+           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 flex items-center gap-2"><ImageIcon size={12}/> Link da Foto (Avatar)</label>
+           <input type="text" value={editAvatar} onChange={e => setEditAvatar(e.target.value)} placeholder="https://..." className="w-full bg-slate-50 border-2 border-slate-100 p-4 rounded-2xl font-medium text-slate-700 focus:border-blue-500 outline-none transition-all text-xs" />
          </div>
-
-         <button onClick={handleUpdateProfile} disabled={isUpdatingProfile} className="w-full py-5 bg-blue-600 text-white rounded-[1.5rem] font-bold shadow-xl shadow-blue-500/20 active:scale-95 transition-all flex items-center justify-center gap-2">
+         <button onClick={handleUpdateProfile} disabled={isUpdatingProfile} className="w-full py-5 bg-blue-600 text-white rounded-[1.5rem] font-bold shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2">
            {isUpdatingProfile ? <Loader2 className="animate-spin" size={20}/> : <Check size={20}/>}
-           SALVAR ALTERAÇÕES
+           SALVAR MUDANÇAS
          </button>
        </div>
-
-       <button onClick={handleLogout} className="w-full py-4 text-red-500 font-bold text-xs uppercase tracking-[0.2em] border-2 border-red-50 rounded-2xl hover:bg-red-50 transition-all flex items-center justify-center gap-3">
-         <LogOut size={16}/> Encerrar Sessão
+       <button onClick={handleLogout} className="w-full py-4 text-red-500 font-bold text-xs uppercase tracking-widest border-2 border-red-50 rounded-2xl hover:bg-red-50 transition-all flex items-center justify-center gap-3">
+         <LogOut size={16}/> Sair do Radar
        </button>
     </div>
   );
@@ -313,183 +460,31 @@ export default function App() {
   const renderSocial = () => (
     <div className="flex-1 flex flex-col p-6 space-y-6 animate-fade-up overflow-y-auto hide-scrollbar pb-32">
        <div className="flex bg-slate-200/50 p-1.5 rounded-[1.5rem]">
-         <button onClick={() => setSocialTab('friends')} className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-widest rounded-xl transition-all ${socialTab === 'friends' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500'}`}>Meus Amigos</button>
-         <button onClick={() => { setSocialTab('discover'); loadDiscoverUsers(); }} className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-widest rounded-xl transition-all ${socialTab === 'discover' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500'}`}>Global</button>
+         <button onClick={() => setSocialTab('friends')} className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-widest rounded-xl transition-all ${socialTab === 'friends' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500'}`}>Amigos</button>
+         <button onClick={() => { setSocialTab('discover'); loadDiscoverUsers(); }} className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-widest rounded-xl transition-all ${socialTab === 'discover' ? 'bg-white text-blue-600 shadow-md' : 'text-slate-500'}`}>Descobrir</button>
        </div>
-
-       {socialTab === 'friends' ? (
-         <div className="space-y-4">
-           {friends.length === 0 ? (
-             <div className="text-center py-20 text-slate-400">
-               <Users className="mx-auto mb-4 opacity-20" size={60}/>
-               <p className="text-sm italic">Nenhum operador adicionado.</p>
-             </div>
-           ) : (
-             friends.map(f => (
-               <div key={f.id} className="bg-white p-4 rounded-3xl flex items-center justify-between shadow-lg border border-white">
-                 <div className="flex items-center gap-4">
-                   <img src={f.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${f.id}`} className="w-12 h-12 rounded-2xl bg-slate-50 border border-slate-100" />
-                   <div>
-                     <p className="font-bold text-slate-800 text-sm">{f.name}</p>
-                     <p className="text-[8px] font-mono text-slate-400">{f.id.slice(0, 16)}</p>
-                   </div>
-                 </div>
-                 {gameState.roomCode && (
-                   <button onClick={() => inviteFriend(f.id)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-bold uppercase">Convidar</button>
-                 )}
+       <div className="space-y-4">
+         {(socialTab === 'friends' ? friends : (searchResults.length > 0 ? searchResults : discoverUsers)).map(u => (
+           <div key={u.id} className="bg-white p-4 rounded-3xl flex items-center justify-between shadow-lg border border-white">
+             <div className="flex items-center gap-4">
+               <img src={u.avatar || (u as any).avatar_url} className="w-12 h-12 rounded-2xl bg-slate-50 border border-slate-100 object-cover" />
+               <div className="flex flex-col">
+                 <p className="font-bold text-slate-800 text-sm">{u.name}</p>
+                 <p className="text-[8px] font-mono text-slate-400">ID: {u.id.slice(0, 10)}...</p>
                </div>
-             ))
-           )}
-         </div>
-       ) : (
-         <div className="space-y-4">
-           <div className="relative">
-             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18}/>
-             <input type="text" placeholder="BUSCAR OPERADOR..." value={searchQuery} onChange={e => setSearchQuery(e.target.value.toUpperCase())} className="w-full bg-white border-2 border-slate-50 p-4 pl-12 rounded-2xl text-sm outline-none focus:border-blue-200 shadow-sm" />
-           </div>
-           
-           {(searchResults.length > 0 ? searchResults : discoverUsers).map(u => (
-             <div key={u.id} className="bg-white p-5 rounded-[2rem] flex items-center justify-between shadow-xl border border-white group transition-all hover:scale-[1.02]">
-                <div className="flex items-center gap-4">
-                  <img src={u.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.id}`} className="w-14 h-14 rounded-2xl bg-slate-900 border-2 border-white shadow-lg" />
-                  <div className="flex flex-col">
-                    <span className="font-bold text-slate-800 text-lg">{u.name}</span>
-                    <span className="text-[9px] font-mono text-slate-400">ID: {u.id.slice(0, 20)}</span>
-                  </div>
-                </div>
-                <button onClick={() => handleAddFriend(u.id)} disabled={friends.some(f => f.id === u.id)} className={`p-4 rounded-2xl transition-all ${friends.some(f => f.id === u.id) ? 'bg-green-50 text-green-500' : 'bg-blue-600 text-white shadow-lg shadow-blue-500/20 active:scale-90'}`}>
-                   {friends.some(f => f.id === u.id) ? <Check size={20}/> : <UserPlus size={20}/>}
-                </button>
              </div>
-           ))}
-         </div>
-       )}
+             {socialTab === 'friends' ? (
+               gameState.roomCode && <button onClick={() => inviteFriend(u.id)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-bold uppercase">Chamar</button>
+             ) : (
+               <button onClick={() => handleAddFriend(u.id)} disabled={friends.some(f => f.id === u.id)} className={`p-3 rounded-xl transition-all ${friends.some(f => f.id === u.id) ? 'bg-green-50 text-green-500' : 'bg-blue-600 text-white'}`}>
+                 {friends.some(f => f.id === u.id) ? <Check size={18}/> : <UserPlus size={18}/>}
+               </button>
+             )}
+           </div>
+         ))}
+       </div>
     </div>
   );
-
-  // Funcionalidades de Jogo
-  const handleCreateRoom = async () => {
-    if (!currentUser) return;
-    const code = Math.random().toString(36).substring(2, 6).toUpperCase();
-    setLoading(true);
-    setLoadingMsg('Sincronizando Frequência do Squad...');
-    try {
-      await joinRoomChannel(code, handleRealtimeMessage);
-      const player: Player = { id: currentUser.id, name: currentUser.name, is_host: true, hp: 100, score: 0, hasAnswered: false, lastAnswerIdx: null, isReady: true };
-      setGameState(s => ({ ...s, view: 'Lobby', roomCode: code, players: [player], difficulty: selectedDifficulty }));
-    } catch (e) { alert("Erro ao criar sala."); }
-    setLoading(false);
-  };
-
-  const handleJoinRoom = async (code: string) => {
-    if (!code || !currentUser) return;
-    if (code.length < 4) return alert("Insira o código de 4 dígitos!");
-    setLoading(true);
-    setLoadingMsg('Localizando Coordenadas do Squad...');
-    try {
-      await joinRoomChannel(code, handleRealtimeMessage);
-      broadcastEvent(code, 'JOIN_REQUEST', { id: currentUser.id, name: currentUser.name });
-      setGameState(s => ({ ...s, view: 'Lobby', roomCode: code }));
-      setInvites(prev => prev.filter(inv => inv.roomCode !== code));
-    } catch (e) { alert("Erro ao conectar."); }
-    setLoading(false);
-  };
-
-  const handleRealtimeMessage = (event: string, payload: any) => {
-    const current = gameStateRef.current;
-    switch (event) {
-      case 'SYNC_STATE': setGameState(s => ({ ...s, ...payload })); break;
-      case 'ROOM_CLOSED': alert("Squad encerrado."); resetLocalState(); break;
-    }
-  };
-
-  const resetLocalState = () => {
-    setGameState({ view: 'Welcome', phase: 'Question', roomCode: null, players: [], currentRound: 0, currentQuestion: null, difficulty: 'Médio' });
-    setMessages([]);
-  };
-
-  // Fix: Added handleLogout to clear session and reset game state
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    setCurrentUser(null);
-    resetLocalState();
-    setCurrentNav('play');
-  };
-
-  // Fix: Added inviteFriend to send room invites via Supabase Realtime
-  const inviteFriend = async (friendId: string) => {
-    if (!gameState.roomCode || !currentUser) return;
-    await sendPrivateMessage(friendId, 'SQUAD_INVITE', {
-      roomCode: gameState.roomCode,
-      senderName: currentUser.name
-    });
-    alert("Convite enviado!");
-  };
-
-  // Fix: Added handleAddFriend to manage friendships in Supabase
-  const handleAddFriend = async (friendId: string) => {
-    if (!currentUser) return;
-    const { success, error } = await addFriendDB(currentUser.id, friendId);
-    if (success) {
-      loadFriends();
-    } else {
-      alert("Erro ao adicionar amigo: " + error);
-    }
-  };
-
-  // Fix: Added handleGuest for guest mode authentication
-  const handleGuest = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!authName) return;
-    const guestUser: User = {
-      id: 'guest_' + Math.random().toString(36).substr(2, 9),
-      name: authName.toUpperCase(),
-      isGuest: true,
-      level: 1,
-      xp: 0,
-      stats: { wins: 0, matches: 0, totalScore: 0 },
-      avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=' + authName
-    };
-    setCurrentUser(guestUser);
-  };
-
-  // Fix: Added handleLogin to process user sign-in
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthLoading(true);
-    setAuthError(null);
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: authEmail,
-      password: authPassword,
-    });
-    if (error) {
-      setAuthError(error.message);
-    } else if (data.user) {
-      mapSessionUser(data.user);
-    }
-    setAuthLoading(false);
-  };
-
-  // Fix: Added handleSignup to process user registration
-  const handleSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthLoading(true);
-    setAuthError(null);
-    const { data, error } = await supabase.auth.signUp({
-      email: authEmail,
-      password: authPassword,
-      options: {
-        data: { name: authName }
-      }
-    });
-    if (error) {
-      setAuthError(error.message);
-    } else {
-      alert("Cadastro realizado! Verifique seu e-mail para confirmar.");
-      setAuthMode('login');
-    }
-    setAuthLoading(false);
-  };
 
   if (!currentUser) return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6 text-white overflow-hidden relative">
@@ -500,40 +495,25 @@ export default function App() {
             <Swords size={40}/>
           </div>
           <h1 className="text-5xl font-bungee tracking-tight">QUIZ <span className="text-blue-500">SQUAD</span></h1>
-          <p className="text-blue-300/60 font-bold text-[10px] uppercase tracking-[0.3em]">Battle Royale Intelligence</p>
         </div>
-
         <div className="glass-panel p-8 rounded-[2.5rem] border border-white/10 shadow-2xl space-y-6">
            <div className="flex p-1 bg-slate-800/50 rounded-2xl">
              {['login', 'signup', 'guest'].map((mode) => (
                <button key={mode} onClick={() => { setAuthMode(mode as any); setAuthError(null); }} className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-widest rounded-xl transition-all ${authMode === mode ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500'}`}>{mode}</button>
              ))}
            </div>
-
-           {authError && (
-             <div className="bg-red-500/10 border border-red-500/20 text-red-500 p-4 rounded-2xl text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 animate-shake">
-               <AlertTriangle size={14}/> {authError}
-             </div>
-           )}
-
-           {authMode === 'guest' ? (
-             <form onSubmit={(e) => { e.preventDefault(); if(authName) { handleGuest(e); } }} className="space-y-4 animate-scale">
-               <input type="text" placeholder="SEU NICKNAME" required maxLength={12} value={authName} onChange={e => setAuthName(e.target.value.toUpperCase())} className="w-full bg-slate-800/50 border border-white/5 p-4 rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none transition-all" />
-               <button type="submit" className="w-full py-5 bg-blue-600 rounded-[1.2rem] font-bold text-white text-lg shadow-xl shadow-blue-600/20 active:scale-95 transition-all">INICIAR OPERAÇÃO</button>
-             </form>
-           ) : (
-             <form onSubmit={authMode === 'login' ? handleLogin : handleSignup} className="space-y-4 animate-scale">
-               {authMode === 'signup' && (
-                 <input type="text" placeholder="NICKNAME" required value={authName} onChange={e => setAuthName(e.target.value.toUpperCase())} className="w-full bg-slate-800/50 border border-white/5 p-4 rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none" />
-               )}
+           {authError && ( <div className="bg-red-500/10 border border-red-500/20 text-red-500 p-4 rounded-2xl text-[10px] font-bold uppercase flex items-center gap-2 animate-shake"><AlertTriangle size={14}/> {authError}</div> )}
+           <form onSubmit={authMode === 'login' ? handleLogin : (authMode === 'signup' ? handleSignup : handleGuest)} className="space-y-4">
+             {authMode !== 'login' && ( <input type="text" placeholder="NICKNAME" required maxLength={12} value={authName} onChange={e => setAuthName(e.target.value.toUpperCase())} className="w-full bg-slate-800/50 border border-white/5 p-4 rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none" /> )}
+             {authMode !== 'guest' && ( <>
                <input type="email" placeholder="E-MAIL" required value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full bg-slate-800/50 border border-white/5 p-4 rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none" />
                <input type="password" placeholder="SENHA" required value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="w-full bg-slate-800/50 border border-white/5 p-4 rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none" />
-               <button type="submit" disabled={authLoading} className="w-full py-5 bg-blue-600 rounded-[1.2rem] font-bold text-white text-lg shadow-xl flex items-center justify-center gap-3">
-                 {authLoading ? <Loader2 className="animate-spin"/> : (authMode === 'login' ? <LogIn size={20}/> : <Sparkles size={20}/>)}
-                 {authMode === 'login' ? 'ENTRAR NO SQUAD' : 'CRIAR PERFIL'}
-               </button>
-             </form>
-           )}
+             </> )}
+             <button type="submit" disabled={authLoading} className="w-full py-5 bg-blue-600 rounded-[1.2rem] font-bold text-white text-lg shadow-xl flex items-center justify-center gap-3">
+               {authLoading ? <Loader2 className="animate-spin"/> : (authMode === 'login' ? <LogIn size={20}/> : <Sparkles size={20}/>)}
+               {authMode === 'login' ? 'ENTRAR' : 'COMEÇAR'}
+             </button>
+           </form>
         </div>
       </div>
     </div>
@@ -541,27 +521,24 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F4F7FA] flex flex-col text-[#001A3D] relative overflow-hidden">
-      {/* Header Fixo para Info rápida */}
       {gameState.view === 'Welcome' && (
         <header className="p-6 flex justify-between items-center z-[100] animate-fade-down">
           <div className="flex items-center gap-3 bg-white p-2 pr-6 rounded-full shadow-lg border border-white">
-            <img src={currentUser?.avatar} className="w-10 h-10 rounded-full border-2 border-blue-100 shadow-sm" />
+            <img src={currentUser?.avatar} className="w-10 h-10 rounded-full border-2 border-blue-100 shadow-sm object-cover" />
             <div className="flex flex-col">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">Status: <span className="text-green-500">Online</span></span>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">Rank: <span className="text-blue-600">Bronze</span></span>
               <span className="font-bold text-slate-800 text-sm leading-tight">{currentUser?.name}</span>
             </div>
           </div>
-          <div className="relative">
+          <div className="relative cursor-pointer" onClick={() => { setCurrentNav('social'); setSocialTab('friends'); }}>
             <Bell size={24} className="text-slate-400"/>
-            {invites.length > 0 && <span className="absolute -top-1 -right-1 bg-red-500 w-4 h-4 rounded-full flex items-center justify-center text-[8px] text-white font-bold">{invites.length}</span>}
+            {invites.length > 0 && <span className="absolute -top-1 -right-1 bg-red-500 w-4 h-4 rounded-full flex items-center justify-center text-[8px] text-white font-bold animate-bounce">{invites.length}</span>}
           </div>
         </header>
       )}
 
-      {/* Main Content Area */}
       <main className="flex-1 flex flex-col relative">
-        {gameState.view === 'Welcome' ? renderNavView() : null}
-        
+        {renderNavView()}
         {gameState.view === 'Lobby' && (
            <div className="flex-1 flex items-center justify-center p-6 animate-scale">
              <div className="w-full max-w-sm bg-white rounded-[2.5rem] p-10 text-center space-y-10 shadow-2xl border-t-8 border-blue-600 relative overflow-hidden">
@@ -569,45 +546,33 @@ export default function App() {
                  <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-blue-600 bg-blue-50 px-4 py-2 rounded-full">SQUAD ID</span>
                  <h2 className="text-7xl font-bungee text-slate-900 tracking-tighter">{gameState.roomCode}</h2>
                </div>
-               
-               <div className="space-y-4">
+               <div className="space-y-4 max-h-60 overflow-y-auto pr-2">
                  {gameState.players.map(p => (
                    <div key={p.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-white">
                      <div className="flex items-center gap-4">
-                       <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white font-bungee text-sm">{p.name[0]}</div>
-                       <span className="font-bold text-slate-700">{p.name}</span>
+                       <img src={p.avatar} className="w-10 h-10 rounded-xl object-cover bg-blue-600 border border-blue-100" />
+                       <span className="font-bold text-slate-700 text-sm">{p.name}</span>
                      </div>
                      {p.is_host && <Crown size={18} className="text-orange-500 fill-orange-500/20"/>}
                    </div>
                  ))}
                </div>
-
-               <button onClick={isHost ? () => {} : () => {}} className={`w-full py-6 rounded-2xl font-bold text-white text-xl shadow-2xl ${isHost ? 'bg-blue-600' : 'bg-slate-300'}`}>
+               <button onClick={isHost ? () => {} : () => {}} className={`w-full py-6 rounded-2xl font-bold text-white text-xl shadow-2xl transition-all active:scale-95 ${isHost ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-500/30' : 'bg-slate-300'}`}>
                  {isHost ? 'INICIAR PARTIDA' : 'SQUAD PRONTO'}
                </button>
-               
-               <button onClick={resetLocalState} className="text-red-500 text-xs font-bold uppercase tracking-widest">Sair da Sala</button>
+               <button onClick={resetLocalState} className="text-red-500 text-[10px] font-bold uppercase tracking-widest hover:bg-red-50 px-6 py-2 rounded-full transition-all">Sair da Sala</button>
              </div>
            </div>
         )}
       </main>
 
-      {/* BOTTOM NAV BAR */}
       {gameState.view === 'Welcome' && (
         <nav className="fixed bottom-0 left-0 right-0 z-[1000] p-6 pb-10">
-          <div className="max-w-md mx-auto bg-slate-900/90 backdrop-blur-xl rounded-[2.5rem] p-2 flex items-center justify-around shadow-2xl border border-white/10">
-            <button onClick={() => setCurrentNav('play')} className={`p-4 rounded-2xl transition-all ${currentNav === 'play' ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/30' : 'text-slate-500 hover:text-white'}`}>
-              <Swords size={24}/>
-            </button>
-            <button onClick={() => { setCurrentNav('ranking'); loadRanking(); }} className={`p-4 rounded-2xl transition-all ${currentNav === 'ranking' ? 'bg-orange-500 text-white shadow-xl shadow-orange-500/30' : 'text-slate-500 hover:text-white'}`}>
-              <Trophy size={24}/>
-            </button>
-            <button onClick={() => { setCurrentNav('social'); loadFriends(); }} className={`p-4 rounded-2xl transition-all ${currentNav === 'social' ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/30' : 'text-slate-500 hover:text-white'}`}>
-              <Users size={24}/>
-            </button>
-            <button onClick={() => setCurrentNav('profile')} className={`p-4 rounded-2xl transition-all ${currentNav === 'profile' ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/30' : 'text-slate-500 hover:text-white'}`}>
-              <UserIcon size={24}/>
-            </button>
+          <div className="max-w-md mx-auto bg-slate-900/95 backdrop-blur-xl rounded-[2.5rem] p-2 flex items-center justify-around shadow-2xl border border-white/10">
+            <button onClick={() => setCurrentNav('play')} className={`p-4 rounded-2xl transition-all ${currentNav === 'play' ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/30 scale-110' : 'text-slate-500 hover:text-white'}`}><Swords size={24}/></button>
+            <button onClick={() => { setCurrentNav('ranking'); loadRanking(); }} className={`p-4 rounded-2xl transition-all ${currentNav === 'ranking' ? 'bg-orange-500 text-white shadow-xl shadow-orange-500/30 scale-110' : 'text-slate-500 hover:text-white'}`}><Trophy size={24}/></button>
+            <button onClick={() => { setCurrentNav('social'); loadFriends(); }} className={`p-4 rounded-2xl transition-all ${currentNav === 'social' ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/30 scale-110' : 'text-slate-500 hover:text-white'}`}><Users size={24}/></button>
+            <button onClick={() => setCurrentNav('profile')} className={`p-4 rounded-2xl transition-all ${currentNav === 'profile' ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/30 scale-110' : 'text-slate-500 hover:text-white'}`}><UserIcon size={24}/></button>
           </div>
         </nav>
       )}
