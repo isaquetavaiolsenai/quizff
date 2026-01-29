@@ -1,454 +1,900 @@
 
-import React, { useState, useEffect } from 'react';
-import { Player, GameState, ViewState, StoryNode } from './types';
-import { supabase, signUp, signIn, createRoom, joinRoom, subscribeRoom, broadcastState } from './services/supabaseService';
-import { generateGameNode } from './services/geminiService';
-import { Flame, Users, Target, Zap, Trophy, LogOut, Loader2, Play, AlertTriangle, CheckCircle, Skull, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { Player, GameState, StoryNode, ViewState, RoundPhase, DifficultyLevel, ChatMessage, User, Friend } from './types';
+import { 
+  joinRoomChannel, broadcastEvent, supabase, joinUserChannel, 
+  sendPrivateMessage, searchProfiles, addFriendDB, fetchFriendsList, upsertProfile,
+  fetchAllProfiles
+} from './services/supabaseService';
+import { generateGameQuestion } from './services/geminiService';
+import { 
+  Flame, Users, Target, Zap, Trophy, Loader2, Skull, 
+  LogOut, Crown, Share2, Mail, Lock, LogIn, Sparkles, 
+  MessageCircle, Send, X, User as UserIcon, ShieldAlert, Heart,
+  ChevronRight, Swords, Radio, AlertCircle, DoorOpen, Power,
+  Keyboard, UserPlus, Check, Bell, Search, Database, Copy, Globe, Info, Fingerprint,
+  AlertTriangle, Terminal
+} from 'lucide-react';
+
+const GAME_TIPS = [
+  "O Gelo rápido é sua melhor defesa em campo aberto.",
+  "Mantenha o colete sempre reparado para reduzir o dano.",
+  "Mudar de posição após atirar evita que o squad inimigo te flanqueie.",
+  "Habilidades como Alok e Kelly formam combos imbatíveis.",
+  "A zona final causa dano massivo, não se atrase!",
+  "Usar silenciador em Rifles de Precisão confunde o inimigo."
+];
+
+const SOUNDS = {
+  CLICK: 'https://assets.mixkit.co/active_storage/sfx/2567/2567-preview.mp3',
+  MESSAGE: 'https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3',
+  DAMAGE: 'https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3',
+  INVITE: 'https://assets.mixkit.co/active_storage/sfx/2019/2019-preview.mp3'
+};
+
+const playSound = (url: string) => {
+  const audio = new Audio(url);
+  audio.volume = 0.3;
+  audio.play().catch(() => {});
+};
+
+const renderHP = (hp: number) => {
+  const total = 5;
+  const active = Math.ceil(Math.max(0, hp) / 20);
+  return (
+    <div className="flex gap-1">
+      {Array.from({ length: total }).map((_, i) => (
+        <Heart 
+          key={i} 
+          size={16} 
+          className={`${i < active ? "fill-red-500 text-red-500" : "fill-slate-200 text-slate-200"} transition-all duration-300`} 
+        />
+      ))}
+    </div>
+  );
+};
 
 export default function App() {
-  const [user, setUser] = useState<any>(null);
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(false);
-  const [loadingMsg, setLoadingMsg] = useState('Processando...');
-  const [urlError, setUrlError] = useState<string | null>(null);
+  const [loadingMsg, setLoadingMsg] = useState('');
+  const [currentTip, setCurrentTip] = useState('');
+  const [selectedDifficulty, setSelectedDifficulty] = useState<DifficultyLevel>('Médio');
+  const [showDamageEffect, setShowDamageEffect] = useState(false);
   
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isSocialOpen, setIsSocialOpen] = useState(false);
+  const [socialTab, setSocialTab] = useState<'friends' | 'discover'>('friends');
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [discoverUsers, setDiscoverUsers] = useState<any[]>([]);
+  const [invites, setInvites] = useState<{ roomCode: string, senderName: string }[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [dbError, setDbError] = useState<string | null>(null);
+  
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'guest'>('login');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authName, setAuthName] = useState('');
+
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [unreadCount, setUnreadCount] = useState(0);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
   const [gameState, setGameState] = useState<GameState>({
     view: 'Welcome',
+    phase: 'Question',
     roomCode: null,
     players: [],
-    currentTurn: 0,
-    history: []
+    currentRound: 0,
+    currentQuestion: null,
+    difficulty: 'Médio'
   });
 
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [nickname, setNickname] = useState('');
   const [inputCode, setInputCode] = useState('');
+  const gameStateRef = useRef(gameState);
 
-  // Sincronização de Sessão e Erros de URL
+  const meInGame = useMemo(() => 
+    gameState.players.find(p => p.id === currentUser?.id)
+  , [gameState.players, currentUser]);
+
+  const isHost = meInGame?.is_host ?? false;
+
   useEffect(() => {
-    // Detectar erro de OTP expirado ou acesso negado (sua imagem de erro)
-    const hash = window.location.hash;
-    if (hash.includes('error')) {
-      const params = new URLSearchParams(hash.replace('#', '?'));
-      const errorDesc = params.get('error_description')?.replace(/\+/g, ' ');
-      if (errorDesc) setUrlError(errorDesc);
-    }
-
-    supabase.auth.getUser().then(({ data }) => setUser(data.user));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        mapSessionUser(session.user);
+      }
     });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        mapSessionUser(session.user);
+      } else {
+        setCurrentUser(null);
+      }
+    });
+
     return () => subscription.unsubscribe();
   }, []);
 
-  // Sincronização Realtime da Sala
   useEffect(() => {
-    if (gameState.roomCode) {
-      return subscribeRoom(
-        gameState.roomCode,
-        (players) => setGameState(s => ({ ...s, players })),
-        (remote) => {
-          if (remote.view || remote.history) {
-            setGameState(s => ({ ...s, ...remote }));
+    if (currentUser) {
+      joinUserChannel(currentUser.id, (event, payload) => {
+        if (event === 'SQUAD_INVITE') {
+          playSound(SOUNDS.INVITE);
+          setInvites(prev => [...prev, payload]);
+        }
+      });
+      loadFriends();
+      loadDiscoverUsers();
+      upsertProfile(currentUser.id, currentUser.name);
+    }
+  }, [currentUser]);
+
+  const loadFriends = async () => {
+    if (!currentUser) return;
+    const { data, error } = await fetchFriendsList(currentUser.id);
+    if (error === 'TABLE_MISSING') setDbError('MISSING_TABLES');
+    else {
+      setFriends(data);
+      setDbError(null);
+    }
+  };
+
+  const loadDiscoverUsers = async () => {
+    const { data, error } = await fetchAllProfiles();
+    if (error === 'TABLE_MISSING') setDbError('MISSING_TABLES');
+    else {
+      setDiscoverUsers(data.filter(p => p.id !== currentUser?.id));
+      setDbError(null);
+    }
+  };
+
+  const mapSessionUser = (supabaseUser: any) => {
+    setCurrentUser({
+      id: supabaseUser.id,
+      name: supabaseUser.user_metadata.name || "PLAYER",
+      email: supabaseUser.email,
+      isGuest: false,
+      level: 1, xp: 0, stats: { wins: 0, matches: 0, totalScore: 0 }
+    });
+  };
+
+  useEffect(() => {
+    const delayDebounceFn = setTimeout(async () => {
+      if (searchQuery.length >= 2) {
+        setIsSearching(true);
+        const { data, error } = await searchProfiles(searchQuery);
+        if (error === 'TABLE_MISSING') setDbError('MISSING_TABLES');
+        else setSearchResults(data.filter(r => r.id !== currentUser?.id));
+        setIsSearching(false);
+      } else {
+        setSearchResults([]);
+      }
+    }, 500);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
+
+  useEffect(() => {
+    if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isChatOpen]);
+
+  useEffect(() => {
+    if (loading) setCurrentTip(GAME_TIPS[Math.floor(Math.random() * GAME_TIPS.length)]);
+  }, [loading]);
+
+  const resetLocalState = () => {
+    setGameState({
+      view: 'Welcome',
+      phase: 'Question',
+      roomCode: null,
+      players: [],
+      currentRound: 0,
+      currentQuestion: null,
+      difficulty: 'Médio'
+    });
+    setMessages([]);
+    setIsChatOpen(false);
+  };
+
+  const updateAndBroadcast = (newState: Partial<GameState>) => {
+    setGameState(s => {
+      const merged = { ...s, ...newState };
+      if (s.roomCode) broadcastEvent(s.roomCode, 'SYNC_STATE', merged);
+      return merged;
+    });
+  };
+
+  const handleLeaveRoom = () => {
+    playSound(SOUNDS.CLICK);
+    if (gameState.roomCode && currentUser) {
+      broadcastEvent(gameState.roomCode, 'PLAYER_LEFT', { playerId: currentUser.id });
+    }
+    resetLocalState();
+  };
+
+  const handleCloseRoom = () => {
+    if (!isHost || !gameState.roomCode) return;
+    playSound(SOUNDS.CLICK);
+    broadcastEvent(gameState.roomCode, 'ROOM_CLOSED', {});
+    resetLocalState();
+  };
+
+  const handleRealtimeMessage = (event: string, payload: any) => {
+    const current = gameStateRef.current;
+    switch (event) {
+      case 'SYNC_STATE': setGameState(s => ({ ...s, ...payload })); break;
+      case 'CHAT_MESSAGE': 
+        setMessages(prev => [...prev, payload]);
+        if (!isChatOpen) { setUnreadCount(p => p + 1); playSound(SOUNDS.MESSAGE); }
+        break;
+      case 'ROOM_CLOSED':
+        alert("O Líder do Squad encerrou a partida.");
+        resetLocalState();
+        break;
+      case 'PLAYER_LEFT':
+        if (current.players.find(p => p.id === currentUser?.id)?.is_host) {
+          const newPlayers = current.players.filter(p => p.id !== payload.playerId);
+          updateAndBroadcast({ players: newPlayers });
+        }
+        break;
+      case 'JOIN_REQUEST':
+        if (current.players.find(p => p.id === currentUser?.id)?.is_host) {
+          if (!current.players.find(p => p.id === payload.id)) {
+            const newPlayers = [...current.players, { ...payload, is_host: false, hp: 100, score: 0, hasAnswered: false, lastAnswerIdx: null, isReady: false }];
+            updateAndBroadcast({ players: newPlayers });
           }
         }
-      );
-    }
-  }, [gameState.roomCode]);
-
-  const handleAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setLoadingMsg('Conectando ao Squad...');
-    try {
-      if (authMode === 'signup') {
-        await signUp(email, password, nickname);
-        alert('E-mail enviado! Confirme para ativar seu cadastro.');
-      } else {
-        await signIn(email, password);
-      }
-    } catch (err: any) {
-      alert('Falha na autenticação: ' + err.message);
-    } finally {
-      setLoading(false);
+        break;
+      case 'SUBMIT_ANSWER':
+        if (current.players.find(p => p.id === currentUser?.id)?.is_host) {
+          const hpLoss = payload.isCorrect ? 0 : (current.difficulty === 'Fácil' ? 10 : current.difficulty === 'Médio' ? 25 : 50);
+          const updatedPlayers = current.players.map(p => {
+            if (p.id === payload.playerId) {
+              return { 
+                ...p, 
+                hasAnswered: true, 
+                lastAnswerIdx: payload.idx, 
+                score: payload.isCorrect ? p.score + 1000 : p.score, 
+                hp: Math.max(0, p.hp - hpLoss) 
+              };
+            }
+            return p;
+          });
+          updateAndBroadcast({ players: updatedPlayers });
+          if (updatedPlayers.every(p => p.hasAnswered)) {
+            setTimeout(() => updateAndBroadcast({ phase: 'Results' }), 1200);
+          }
+        }
+        break;
     }
   };
 
   const handleCreateRoom = async () => {
-    setLoading(true);
-    setLoadingMsg('Gerando Frequência de Rádio...');
+    if (!currentUser) return;
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const name = user?.user_metadata?.display_name || 'Jogador';
+    setLoading(true);
+    setLoadingMsg('Sincronizando Frequência do Squad...');
     try {
-      const player = await createRoom(code, name, user.id);
-      setGameState(s => ({ ...s, roomCode: code, players: [player], view: 'Lobby' }));
-    } catch (err: any) { alert('Erro ao criar sala. Verifique se as tabelas "rooms" e "players" existem no seu Supabase.'); }
+      await joinRoomChannel(code, handleRealtimeMessage);
+      const player: Player = { id: currentUser.id, name: currentUser.name, is_host: true, hp: 100, score: 0, hasAnswered: false, lastAnswerIdx: null, isReady: true };
+      setGameState(s => ({ ...s, view: 'Lobby', roomCode: code, players: [player], difficulty: selectedDifficulty }));
+    } catch (e) { alert("Erro ao criar sala."); }
     setLoading(false);
   };
 
-  const handleJoinRoom = async () => {
-    if (!inputCode) return;
+  const handleJoinRoom = async (code: string) => {
+    if (!code || !currentUser) return;
+    if (code.length < 4) return alert("Insira o código de 4 dígitos!");
     setLoading(true);
-    setLoadingMsg('Sincronizando com Aliados...');
-    const name = user?.user_metadata?.display_name || 'Jogador';
+    setLoadingMsg('Localizando Coordenadas do Squad...');
     try {
-      const player = await joinRoom(inputCode, name, user.id);
-      setGameState(s => ({ ...s, roomCode: inputCode, view: 'Lobby' }));
-    } catch (err: any) { alert('Sala não encontrada.'); }
+      await joinRoomChannel(code, handleRealtimeMessage);
+      broadcastEvent(code, 'JOIN_REQUEST', { id: currentUser.id, name: currentUser.name });
+      setGameState(s => ({ ...s, view: 'Lobby', roomCode: code }));
+      setInvites(prev => prev.filter(inv => inv.roomCode !== code));
+    } catch (e) { alert("Erro ao conectar."); }
     setLoading(false);
   };
 
-  const startGame = async () => {
-    setLoading(true);
-    setLoadingMsg('IA Mestre despertando...');
-    try {
-      const { node, imageUrl } = await generateGameNode(gameState.players, []);
-      const nextState: Partial<GameState> = {
-        view: 'Playing',
-        history: [{ ...node, imageUrl }],
-        currentTurn: 0
-      };
-      setGameState(s => ({ ...s, ...nextState } as GameState));
-      broadcastState(gameState.roomCode!, nextState);
-    } catch (err) { alert('Erro na IA.'); }
-    setLoading(false);
-  };
-
-  const makeChoice = async (idx: number) => {
-    const current = gameState.history[gameState.history.length - 1];
-    if (user.id !== current.currentPlayerId) return;
-
-    setLoading(true);
-    const isCorrect = idx === current.correctAnswerIndex;
-    setLoadingMsg(isCorrect ? 'ESTRATÉGIA BOOYAH!' : 'EMBOSCADA! VOCÊ FOI ATINGIDO!');
-
-    const updatedPlayers = gameState.players.map(p => {
-      if (p.id === user.id) {
-        const newHp = isCorrect ? p.hp : Math.max(0, p.hp - 25);
-        return { 
-          ...p, 
-          hp: newHp,
-          score: isCorrect ? p.score + 100 : p.score,
-          rank: newHp === 0 ? 'ELIMINADO' : p.rank
-        };
-      }
-      return p;
+  const inviteFriend = async (friendId: string) => {
+    if (!gameState.roomCode || !currentUser) return;
+    playSound(SOUNDS.CLICK);
+    await sendPrivateMessage(friendId, 'SQUAD_INVITE', { 
+      roomCode: gameState.roomCode, 
+      senderName: currentUser.name 
     });
+    alert("Convite enviado!");
+  };
 
-    const activePlayers = updatedPlayers.filter(p => p.hp > 0);
-    if (activePlayers.length === 0) {
-      const gameOverState: Partial<GameState> = { view: 'GameOver', players: updatedPlayers };
-      setGameState(s => ({ ...s, ...gameOverState } as GameState));
-      broadcastState(gameState.roomCode!, gameOverState);
-      setLoading(false);
-      return;
+  const handleAddFriend = async (friendId: string) => {
+    if (!currentUser) return;
+    playSound(SOUNDS.CLICK);
+    const { success, error } = await addFriendDB(currentUser.id, friendId);
+    if (success) {
+      alert("Operador adicionado à sua lista!");
+      loadFriends();
+      setSearchQuery('');
+    } else {
+      if (error === 'TABLE_MISSING') alert("Erro: Tabelas do banco de dados não encontradas. Verifique o setup.sql.");
+      else alert("Erro ao adicionar amigo: " + error);
     }
+  };
 
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    playSound(SOUNDS.CLICK);
+    alert("Copiado!");
+  };
+
+  const nextRound = async () => {
+    const nextR = gameState.currentRound + 1;
+    setLoading(true);
+    setLoadingMsg(`Carregando Rodada ${nextR}...`);
     try {
-      const { node, imageUrl } = await generateGameNode(updatedPlayers, gameState.history, idx);
-      const nextState: Partial<GameState> = {
-        players: updatedPlayers,
-        currentTurn: gameState.currentTurn + 1,
-        history: [...gameState.history, { ...node, imageUrl }]
-      };
-      setGameState(s => ({ ...s, ...nextState } as GameState));
-      broadcastState(gameState.roomCode!, nextState);
-    } catch (err) { alert('Falha na IA.'); }
+      const { node, imageUrl } = await generateGameQuestion(nextR, selectedDifficulty);
+      updateAndBroadcast({ 
+        view: 'Playing', 
+        phase: 'Question', 
+        currentRound: nextR, 
+        currentQuestion: { ...node, imageUrl },
+        players: gameState.players.map(p => ({ ...p, hasAnswered: false, lastAnswerIdx: null }))
+      });
+    } catch (err) { alert('Erro na central de comando IA.'); }
     setLoading(false);
   };
 
-  // Renders de Erro
-  if (urlError) return (
-    <div className="min-h-screen bg-[#020617] flex items-center justify-center p-6">
-      <div className="max-w-md w-full bg-slate-900 border-2 border-red-500/40 p-10 rounded-[2.5rem] text-center space-y-6 shadow-2xl">
-        <AlertTriangle className="text-red-500 mx-auto" size={80} />
-        <h2 className="text-3xl font-bungee text-white">ERRO DE ACESSO</h2>
-        <p className="text-slate-400 font-bold">{urlError}</p>
-        <p className="text-xs text-slate-500 uppercase tracking-widest">O link de e-mail pode ter expirado ou o redirecionamento falhou.</p>
-        <button onClick={() => window.location.href = window.location.origin} className="w-full py-5 bg-orange-600 rounded-2xl text-white font-black hover:bg-orange-500 transition-all">TENTAR NOVAMENTE</button>
-      </div>
-    </div>
-  );
+  const handleAnswer = (idx: number) => {
+    if (!gameState.roomCode || !currentUser || !gameState.currentQuestion) return;
+    const isCorrect = idx === gameState.currentQuestion.correctAnswerIndex;
+    if (!isCorrect) {
+      playSound(SOUNDS.DAMAGE);
+      setShowDamageEffect(true);
+      setTimeout(() => setShowDamageEffect(false), 500);
+    }
+    broadcastEvent(gameState.roomCode, 'SUBMIT_ANSWER', { playerId: currentUser.id, idx, isCorrect });
+  };
 
-  if (!user) return (
-    <div className="min-h-screen bg-[#020617] flex items-center justify-center p-6 relative overflow-hidden">
-      <div className="scanline opacity-10" />
-      <div className="max-w-md w-full bg-[#0f172a]/95 border border-orange-500/20 p-10 rounded-[3rem] shadow-2xl space-y-8 animate-in fade-in zoom-in duration-500 relative z-10">
-        <div className="text-center space-y-2">
-          <div className="ff-gradient w-24 h-24 rounded-3xl mx-auto flex items-center justify-center ff-glow rotate-3 border-4 border-white/5">
-            <Flame className="text-white" size={48} />
+  const sendChat = (txt: string) => {
+    if (!txt.trim() || !gameState.roomCode || !currentUser) return;
+    broadcastEvent(gameState.roomCode, 'CHAT_MESSAGE', { 
+      id: Date.now().toString(), 
+      senderId: currentUser.id, 
+      senderName: currentUser.name, 
+      text: txt.trim(), 
+      timestamp: Date.now() 
+    });
+    setChatInput('');
+  };
+
+  const handleGuest = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authName.trim()) return;
+    const user: User = { 
+      id: 'g-' + Math.random().toString(36).substring(2, 7), 
+      name: authName.toUpperCase(), 
+      isGuest: true, 
+      level: 1, xp: 0, stats: { wins: 0, matches: 0, totalScore: 0 } 
+    };
+    setCurrentUser(user);
+    playSound(SOUNDS.CLICK);
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError(null);
+    const { error } = await supabase.auth.signInWithPassword({
+      email: authEmail,
+      password: authPassword,
+    });
+    if (error) setAuthError(error.message);
+    setAuthLoading(false);
+  };
+
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError(null);
+    const { error } = await supabase.auth.signUp({
+      email: authEmail,
+      password: authPassword,
+      options: {
+        data: { name: authName.toUpperCase() }
+      }
+    });
+    if (error) setAuthError(error.message);
+    else alert("Cadastro realizado! Verifique seu e-mail.");
+    setAuthLoading(false);
+  };
+
+  const handleLogout = async () => {
+    playSound(SOUNDS.CLICK);
+    await supabase.auth.signOut();
+    setCurrentUser(null);
+    setFriends([]);
+  };
+
+  if (!currentUser) return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6 text-white overflow-hidden relative">
+      <div className="absolute inset-0 opacity-10 bg-[url('https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&q=80')] bg-cover bg-center grayscale"></div>
+      <div className="w-full max-w-sm z-10 space-y-8 animate-fade-up">
+        <div className="text-center space-y-3">
+          <div className="w-20 h-20 bg-[#014BAA] mx-auto rounded-3xl flex items-center justify-center shadow-2xl shadow-blue-500/20 rotate-3 animate-float border-4 border-white">
+            <Swords size={40}/>
           </div>
-          <h1 className="text-5xl font-bungee text-white">SQUAD <span className="text-orange-600">JOIN</span></h1>
-          <p className="text-slate-500 font-black text-[10px] tracking-[0.4em] uppercase">Seja Bem-vindo à Arena</p>
+          <h1 className="text-5xl font-bungee tracking-tight">QUIZ <span className="text-blue-500">SQUAD</span></h1>
+          <p className="text-blue-300/60 font-bold text-[10px] uppercase tracking-[0.3em]">Battle Royale Intelligence</p>
         </div>
 
-        <div className="flex bg-[#020617] p-2 rounded-2xl gap-2">
-          <button onClick={() => setAuthMode('login')} className={`flex-1 py-4 rounded-xl text-xs font-black uppercase transition-all ${authMode === 'login' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-500'}`}>LOGIN</button>
-          <button onClick={() => setAuthMode('signup')} className={`flex-1 py-4 rounded-xl text-xs font-black uppercase transition-all ${authMode === 'signup' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-500'}`}>REGISTRO</button>
-        </div>
-
-        <form onSubmit={handleAuth} className="space-y-4">
-          {authMode === 'signup' && (
-            <input type="text" placeholder="NICKNAME" required value={nickname} onChange={e => setNickname(e.target.value.toUpperCase())} className="w-full bg-[#020617] border-2 border-slate-800 p-5 rounded-2xl text-white font-bold focus:border-orange-500 outline-none transition-all" />
-          )}
-          <input type="email" placeholder="EMAIL" required value={email} onChange={e => setEmail(e.target.value)} className="w-full bg-[#020617] border-2 border-slate-800 p-5 rounded-2xl text-white font-bold focus:border-orange-500 outline-none transition-all" />
-          <input type="password" placeholder="SENHA" required value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-[#020617] border-2 border-slate-800 p-5 rounded-2xl text-white font-bold focus:border-orange-500 outline-none transition-all" />
-          <button disabled={loading} className="w-full py-6 ff-gradient rounded-2xl font-black text-white text-xl uppercase tracking-widest ff-glow flex items-center justify-center gap-3">
-            {loading ? <Loader2 className="animate-spin" /> : <Play size={24} fill="white" />}
-            {authMode === 'login' ? 'INICIAR PARTIDA' : 'CRIAR SOLDADO'}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-
-  if (gameState.view === 'Welcome') return (
-    <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center p-6 relative">
-      <div className="scanline opacity-20" />
-      <div className="max-w-4xl w-full text-center space-y-16 relative z-10">
-        <header className="space-y-4 animate-in slide-in-from-top duration-700">
-           <h2 className="text-orange-500 font-black text-2xl tracking-[0.6em] uppercase">Status: Online</h2>
-           <h1 className="text-[12rem] font-bungee text-white leading-none drop-shadow-2xl">BOOYAH!</h1>
-           <div className="bg-slate-900/80 py-4 px-10 rounded-full border border-orange-500/20 inline-flex mx-auto items-center gap-4">
-              <CheckCircle className="text-emerald-500" size={24} />
-              <span className="text-white font-black uppercase text-xl">{user?.user_metadata?.display_name || 'RECRUTA'}</span>
-           </div>
-        </header>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-           <button onClick={handleCreateRoom} className="group bg-[#0f172a] border-4 border-slate-800 p-16 rounded-[4rem] hover:border-orange-600 transition-all flex flex-col items-center gap-8 shadow-2xl hover:-translate-y-4">
-              <div className="p-8 bg-slate-800 rounded-3xl group-hover:bg-orange-600 transition-all shadow-xl">
-                <Target size={80} className="text-slate-400 group-hover:text-white" />
-              </div>
-              <span className="font-bungee text-4xl text-white uppercase">CRIAR SALA</span>
-              <p className="text-slate-500 text-xs font-black tracking-widest uppercase">Assuma a liderança do Squad</p>
-           </button>
-
-           <div className="bg-[#0f172a] border-4 border-slate-800 p-16 rounded-[4rem] flex flex-col items-center gap-8 shadow-2xl">
-              <div className="p-8 bg-slate-800 rounded-3xl shadow-xl">
-                <Users size={80} className="text-slate-400" />
-              </div>
-              <div className="w-full space-y-6">
-                <input type="text" placeholder="CÓDIGO" value={inputCode} onChange={e => setInputCode(e.target.value.toUpperCase())} maxLength={4} className="w-full bg-[#020617] border-4 border-slate-800 p-6 rounded-3xl text-white text-center font-bungee text-6xl focus:border-orange-500 outline-none transition-all shadow-inner" />
-                <button onClick={handleJoinRoom} className="w-full py-6 bg-orange-600 rounded-3xl text-white font-black text-2xl uppercase tracking-[0.4em] hover:bg-orange-500 transition-all shadow-lg active:scale-95">UNIR-SE</button>
-              </div>
-           </div>
-        </div>
-
-        <button onClick={() => supabase.auth.signOut()} className="text-slate-600 hover:text-red-500 font-black uppercase tracking-[0.5em] text-sm flex items-center gap-3 transition-colors mx-auto">
-          <LogOut size={20} /> ENCERRAR SESSÃO
-        </button>
-      </div>
-    </div>
-  );
-
-  if (gameState.view === 'Lobby') return (
-    <div className="min-h-screen bg-[#020617] flex items-center justify-center p-6">
-      <div className="w-full max-w-lg bg-[#0f172a]/95 backdrop-blur-3xl p-14 rounded-[4rem] border-t-[14px] border-orange-600 shadow-2xl space-y-12 text-center relative overflow-hidden">
-        <div className="space-y-4 relative z-10">
-          <p className="text-xs font-black text-slate-500 uppercase tracking-[0.6em]">ID DA SALA</p>
-          <h2 className="text-9xl font-bungee text-white drop-shadow-xl">{gameState.roomCode}</h2>
-        </div>
-
-        <div className="space-y-8 relative z-10">
-          <h3 className="text-sm font-black text-orange-500 uppercase flex items-center justify-center gap-4">
-             <Users size={28} /> SQUAD ATIVO ({gameState.players.length}/4)
-          </h3>
-          <div className="space-y-4">
-             {gameState.players.map((p, i) => (
-               <div key={p.id} className="bg-[#020617] p-6 rounded-[2rem] border border-white/5 flex items-center justify-between group hover:border-orange-500/50 transition-all shadow-xl">
-                  <div className="flex items-center gap-6">
-                     <div className="w-16 h-16 rounded-2xl bg-slate-800 flex items-center justify-center font-bungee text-orange-500 text-3xl shadow-inner">
-                        {i + 1}
-                     </div>
-                     <div className="text-left">
-                       <span className="font-black text-white text-2xl uppercase block">{p.name}</span>
-                       <span className="text-[10px] text-slate-500 font-black tracking-widest">{p.id === user.id ? 'VOCÊ' : 'SOLDADO'}</span>
-                     </div>
-                  </div>
-                  {p.is_host && <div className="bg-yellow-500/10 p-4 rounded-2xl border border-yellow-500/30"><Zap size={28} className="text-yellow-500 fill-yellow-500 animate-pulse" /></div>}
-               </div>
+        <div className="glass-panel p-8 rounded-[2rem] border border-white/10 shadow-2xl space-y-6">
+           <div className="flex p-1 bg-slate-800/50 rounded-2xl">
+             {['login', 'signup', 'guest'].map((mode) => (
+               <button key={mode} onClick={() => { setAuthMode(mode as any); setAuthError(null); }} className={`flex-1 py-3 text-[10px] font-bold uppercase tracking-widest rounded-xl transition-all ${authMode === mode ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500'}`}>{mode}</button>
              ))}
-             {gameState.players.length < 2 && (
-               <div className="py-14 text-slate-700 font-black uppercase text-sm tracking-[0.5em] animate-pulse italic">Escaneando aliados...</div>
-             )}
+           </div>
+
+           {authError && (
+             <div className="bg-red-500/10 border border-red-500/20 p-3 rounded-xl flex items-center gap-2 text-red-400 text-xs animate-shake">
+               <AlertCircle size={14}/>
+               <span>{authError}</span>
+             </div>
+           )}
+
+           {authMode === 'guest' ? (
+             <form onSubmit={handleGuest} className="space-y-4 animate-scale">
+               <div className="relative">
+                 <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18}/>
+                 <input type="text" placeholder="SEU NICKNAME" required maxLength={12} value={authName} onChange={e => setAuthName(e.target.value.toUpperCase())} className="w-full bg-slate-800/50 border border-white/5 p-4 pl-12 rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none transition-all" />
+               </div>
+               <button type="submit" className="w-full py-5 bg-blue-600 rounded-[1.2rem] font-bold text-white text-lg shadow-xl shadow-blue-600/20 active:scale-95 transition-all">INICIAR OPERAÇÃO</button>
+             </form>
+           ) : (
+             <form onSubmit={authMode === 'login' ? handleLogin : handleSignup} className="space-y-4 animate-scale">
+               {authMode === 'signup' && (
+                 <div className="relative">
+                   <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18}/>
+                   <input type="text" placeholder="NICKNAME" required value={authName} onChange={e => setAuthName(e.target.value.toUpperCase())} className="w-full bg-slate-800/50 border border-white/5 p-4 pl-12 rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none" />
+                 </div>
+               )}
+               <div className="relative">
+                 <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18}/>
+                 <input type="email" placeholder="E-MAIL" required value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full bg-slate-800/50 border border-white/5 p-4 pl-12 rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none" />
+               </div>
+               <div className="relative">
+                 <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18}/>
+                 <input type="password" placeholder="SENHA" required value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="w-full bg-slate-800/50 border border-white/5 p-4 pl-12 rounded-2xl font-bold focus:ring-2 focus:ring-blue-500 outline-none" />
+               </div>
+               <button type="submit" disabled={authLoading} className="w-full py-5 bg-blue-600 rounded-[1.2rem] font-bold text-white text-lg shadow-xl shadow-blue-600/20 active:scale-95 transition-all flex items-center justify-center gap-3">
+                 {authLoading ? <Loader2 className="animate-spin"/> : (authMode === 'login' ? <LogIn size={20}/> : <Sparkles size={20}/>)}
+                 {authMode === 'login' ? 'ENTRAR NO SQUAD' : 'CRIAR PERFIL'}
+               </button>
+             </form>
+           )}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#F4F7FA] flex flex-col text-[#001A3D] relative overflow-hidden">
+      {showDamageEffect && <div className="fixed inset-0 bg-red-500/20 z-[9999] pointer-events-none animate-pulse"></div>}
+
+      <header className="p-6 flex justify-between items-center z-50">
+        <div className="bg-white pl-2 pr-6 py-2 rounded-full flex items-center gap-4 shadow-xl border border-white animate-fade-up">
+           <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bungee text-lg border-2 border-white shadow-md">{currentUser.name[0]}</div>
+           <div className="flex flex-col">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 flex items-center gap-1">Operador: <span className="text-slate-900">{currentUser.name}</span></span>
+              <div className="h-1.5 w-24 bg-slate-100 rounded-full mt-1 overflow-hidden"><div className="h-full bg-blue-500 w-[40%]"></div></div>
+           </div>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => { setIsSocialOpen(true); loadDiscoverUsers(); loadFriends(); }} className="relative bg-white w-10 h-10 rounded-full shadow-lg flex items-center justify-center text-slate-400 hover:text-blue-600 transition-all">
+            <Users size={18}/>
+            {(invites.length > 0) && <span className="absolute -top-1 -right-1 bg-red-500 w-4 h-4 rounded-full flex items-center justify-center text-[8px] text-white font-bold animate-bounce">{invites.length}</span>}
+          </button>
+          {gameState.roomCode && (
+            <button onClick={isHost ? handleCloseRoom : handleLeaveRoom} className="bg-white px-4 py-2 rounded-full shadow-lg flex items-center gap-2 text-red-500 font-bold text-[10px] uppercase tracking-widest hover:bg-red-50 transition-all">
+              {isHost ? <><Power size={14}/> Encerrar Sala</> : <><DoorOpen size={14}/> Sair do Squad</>}
+            </button>
+          )}
+          <button onClick={handleLogout} title="Sair da Conta" className="bg-white w-10 h-10 rounded-full shadow-lg flex items-center justify-center text-slate-400 hover:text-red-500 hover:rotate-12 transition-all"><LogOut size={18}/></button>
+        </div>
+      </header>
+
+      {/* SOCIAL HUB DRAWER */}
+      <div className={`fixed inset-y-0 left-0 w-85 bg-white shadow-2xl z-[1100] flex flex-col transition-transform duration-500 ease-in-out ${isSocialOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="bg-blue-600 p-6 flex flex-col gap-4 text-white">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3"><Users size={24}/><span className="font-bungee text-lg">SOCIAL HUB</span></div>
+            <button onClick={() => setIsSocialOpen(false)} className="hover:rotate-90 transition-all"><X size={24}/></button>
+          </div>
+          <div className="flex bg-blue-700/50 p-1 rounded-xl">
+             <button onClick={() => setSocialTab('friends')} className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-widest rounded-lg transition-all ${socialTab === 'friends' ? 'bg-white text-blue-600 shadow-lg' : 'text-blue-200'}`}>Contatos</button>
+             <button onClick={() => { setSocialTab('discover'); loadDiscoverUsers(); }} className={`flex-1 py-2 text-[10px] font-bold uppercase tracking-widest rounded-lg transition-all ${socialTab === 'discover' ? 'bg-white text-blue-600 shadow-lg' : 'text-blue-200'}`}>Descobrir</button>
           </div>
         </div>
 
-        <div className="relative z-10">
-          {gameState.players.find(p => p.id === user.id)?.is_host ? (
-            <button onClick={startGame} disabled={gameState.players.length < 2 || loading} className="w-full py-9 ff-gradient ff-glow rounded-[2.5rem] font-black text-white text-4xl uppercase tracking-[0.4em] disabled:opacity-30 hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-6 shadow-2xl">
-              {loading ? <Loader2 className="animate-spin" /> : <Play fill="white" size={48} />} GO!
-            </button>
+        {/* Database Missing Warning */}
+        {dbError === 'MISSING_TABLES' && (
+          <div className="m-6 p-4 bg-amber-50 border-2 border-amber-200 rounded-2xl space-y-3 animate-shake">
+            <div className="flex items-center gap-2 text-amber-700 font-bold text-xs uppercase tracking-widest">
+              <AlertTriangle size={18}/> SETUP DO BANCO NECESSÁRIO
+            </div>
+            <p className="text-[10px] text-amber-800 leading-relaxed font-medium">As tabelas 'profiles' ou 'friendships' não foram encontradas. Execute o script <b>setup.sql</b> no editor SQL do seu Supabase Dashboard.</p>
+            <button onClick={() => { loadFriends(); loadDiscoverUsers(); }} className="w-full py-2 bg-amber-200 text-amber-800 rounded-lg text-[10px] font-bold uppercase hover:bg-amber-300 transition-all">TENTAR NOVAMENTE</button>
+          </div>
+        )}
+
+        {/* Informação do Próprio ID */}
+        {!dbError && (
+          <div className="bg-slate-50 p-4 border-b border-slate-100">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-2"><Fingerprint size={12}/> Meu Identificador (ID)</p>
+            <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
+              <code className="text-[10px] font-mono font-bold text-blue-600 truncate mr-2">{currentUser.id}</code>
+              <button onClick={() => copyToClipboard(currentUser.id)} className="text-slate-400 hover:text-blue-600 transition-colors" title="Copiar meu ID"><Copy size={14}/></button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 hide-scrollbar">
+          {socialTab === 'friends' ? (
+            <>
+               {/* Search Friends */}
+               <div className="space-y-4">
+                <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Localizar Amigo</h3>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/>
+                  <input 
+                    type="text" 
+                    placeholder="Nickname..." 
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value.toUpperCase())}
+                    className="w-full bg-slate-50 border-2 border-slate-100 p-3 pl-10 rounded-xl text-sm outline-none focus:border-blue-200"
+                  />
+                </div>
+                {searchResults.length > 0 && (
+                  <div className="space-y-2 animate-fade-up">
+                    {searchResults.map(res => (
+                      <div key={res.id} className="bg-white border-2 border-blue-50 p-4 rounded-2xl flex items-center justify-between shadow-sm">
+                        <div className="flex flex-col">
+                          <span className="font-bold text-slate-700 text-sm">{res.name}</span>
+                          <span className="text-[8px] text-slate-400 font-mono">ID: {res.id.slice(0, 16)}...</span>
+                        </div>
+                        <button onClick={() => handleAddFriend(res.id)} className="bg-blue-600 text-white p-2 rounded-xl"><UserPlus size={18}/></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Invites */}
+              {invites.length > 0 && (
+                <div className="space-y-3 pt-4 border-t border-slate-100">
+                  <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2"><Bell size={12}/> Convites Pendentes</h3>
+                  {invites.map((inv, i) => (
+                    <div key={i} className="bg-orange-50 border border-orange-100 p-4 rounded-2xl flex items-center justify-between animate-fade-up">
+                      <div>
+                        <p className="text-xs font-bold text-orange-900">{inv.senderName}</p>
+                        <p className="text-[9px] text-orange-600 uppercase font-bold">Squad {inv.roomCode}</p>
+                      </div>
+                      <button onClick={() => handleJoinRoom(inv.roomCode)} className="bg-orange-500 text-white p-2 rounded-xl hover:scale-110 transition-all"><Check size={18}/></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Friends List */}
+              <div className="space-y-4 pt-4 border-t border-slate-100">
+                <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Meus Contatos ({friends.length})</h3>
+                {friends.length === 0 && !dbError && (
+                   <div className="text-center py-10 space-y-3">
+                      <div className="bg-slate-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto text-slate-200"><Users size={32}/></div>
+                      <p className="text-xs text-slate-400 font-medium italic">Sua lista está vazia.</p>
+                   </div>
+                )}
+                {friends.map((friend) => (
+                  <div key={friend.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100 animate-fade-up">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-blue-600 font-bungee text-sm shadow-sm">{friend.name[0]}</div>
+                      <div>
+                        <p className="font-bold text-slate-700 text-sm">{friend.name}</p>
+                        <p className="text-[8px] text-slate-400 font-mono">ID: {friend.id.slice(0, 12)}...</p>
+                      </div>
+                    </div>
+                    {gameState.roomCode && (
+                      <button onClick={() => inviteFriend(friend.id)} className="bg-blue-100 text-blue-600 px-3 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest hover:bg-blue-600 hover:text-white transition-all">Convidar</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
           ) : (
-            <div className="flex flex-col items-center gap-8 py-12 bg-[#020617] rounded-[3rem] border border-white/5 shadow-inner">
-              <Loader2 className="animate-spin text-orange-500" size={56} />
-              <p className="text-sm font-black text-orange-500 uppercase tracking-[0.6em] animate-pulse">Aguardando Líder do Squad...</p>
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2"><Globe size={14}/> Descoberta Global</h3>
+                <button onClick={loadDiscoverUsers} className="text-blue-500 hover:rotate-180 transition-all duration-500"><Loader2 size={16}/></button>
+              </div>
+              
+              <div className="bg-blue-50 border border-blue-100 p-4 rounded-2xl flex items-start gap-3">
+                 <div className="bg-blue-100 p-2 rounded-xl text-blue-600 mt-1"><Info size={16}/></div>
+                 <p className="text-[10px] text-blue-800 leading-relaxed font-medium">Aqui estão os operadores que entraram recentemente no radar. Você pode adicioná-los diretamente ou compartilhar o seu ID.</p>
+              </div>
+
+              <div className="grid gap-4">
+                {discoverUsers.length === 0 && !dbError && <p className="text-center text-slate-400 text-xs py-10">Procurando sinais de rádio...</p>}
+                {discoverUsers.map((p) => (
+                  <div key={p.id} className="group relative overflow-hidden bg-white border-2 border-slate-50 p-5 rounded-3xl shadow-sm hover:border-blue-100 transition-all hover:shadow-md animate-fade-up">
+                    <div className="flex items-center justify-between relative z-10">
+                      <div className="flex items-center gap-4">
+                         <div className="w-12 h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center font-bungee text-lg shadow-xl shadow-slate-900/20">{p.name[0]}</div>
+                         <div className="flex flex-col">
+                            <span className="font-bold text-slate-800 text-base flex items-center gap-2">{p.name} <Target size={12} className="text-blue-500"/></span>
+                            <div className="flex items-center gap-2 mt-1">
+                               <span className="text-[9px] font-mono font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-lg truncate max-w-[120px]">ID: {p.id}</span>
+                               <button onClick={() => copyToClipboard(p.id)} className="text-slate-300 hover:text-blue-500 transition-colors p-1" title="Copiar ID"><Copy size={12}/></button>
+                            </div>
+                         </div>
+                      </div>
+                      <button 
+                        onClick={() => handleAddFriend(p.id)} 
+                        disabled={friends.some(f => f.id === p.id)}
+                        className={`p-3 rounded-2xl transition-all ${friends.some(f => f.id === p.id) ? 'bg-green-50 text-green-500' : 'bg-blue-600 text-white hover:scale-110 active:scale-95 shadow-lg shadow-blue-500/20'}`}
+                      >
+                        {friends.some(f => f.id === p.id) ? <Check size={20}/> : <UserPlus size={20}/>}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
       </div>
-    </div>
-  );
 
-  const currentNode = gameState.history[gameState.history.length - 1];
-  const isMyTurn = currentNode?.currentPlayerId === user.id;
-  const activePlayer = gameState.players.find(p => p.id === currentNode?.currentPlayerId);
-
-  if (gameState.view === 'Playing') return (
-    <div className="min-h-screen bg-[#020617] flex flex-col font-inter selection:bg-orange-500/30">
-      <header className="p-8 bg-[#0f172a]/95 border-b-4 border-orange-500/20 flex justify-between items-center sticky top-0 z-50 shadow-2xl backdrop-blur-xl">
-        <div className="flex items-center gap-8">
-           <div className="ff-gradient p-5 rounded-[2rem] shadow-orange-500/40 shadow-2xl border-2 border-white/10 rotate-3"><Flame className="text-white" size={40} /></div>
-           <div>
-             <div className="text-[14px] font-black text-orange-500 uppercase tracking-[0.5em] mb-2 animate-pulse">Arena de Combate Elite</div>
-             <div className="text-4xl font-bungee text-white tracking-tight">FREQ: {gameState.roomCode}</div>
-           </div>
-        </div>
-        <div className="flex gap-8">
-           {gameState.players.map(p => (
-             <div key={p.id} className={`px-8 py-5 rounded-[2rem] border-2 flex flex-col gap-4 transition-all duration-700 ${p.id === activePlayer?.id ? 'border-orange-500 bg-orange-600/20 scale-110 shadow-[0_0_50px_rgba(234,88,12,0.4)]' : 'border-slate-800 opacity-20'}`}>
-                <div className="flex justify-between items-center gap-8">
-                  <span className="text-[14px] font-black text-white uppercase truncate max-w-[120px]">{p.name}</span>
-                  <Trophy size={20} className="text-yellow-500" />
+      {/* CHAT RADIO */}
+      {gameState.roomCode && (
+        <>
+          <button onClick={() => { setIsChatOpen(true); setUnreadCount(0); }} className="fixed bottom-6 right-6 z-[100] bg-blue-600 w-16 h-16 rounded-2xl shadow-2xl flex items-center justify-center text-white hover:scale-110 active:scale-90 transition-all border-4 border-white">
+            <Radio size={28} />
+            {unreadCount > 0 && <span className="absolute -top-2 -right-2 bg-orange-500 text-white text-[10px] font-bold w-7 h-7 rounded-full flex items-center justify-center border-4 border-[#F4F7FA]">{unreadCount}</span>}
+          </button>
+          
+          <div className={`fixed inset-y-0 right-0 w-85 bg-white shadow-2xl z-[1000] flex flex-col transition-transform duration-500 ease-in-out ${isChatOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+            <div className="bg-slate-900 p-6 flex items-center justify-between text-white">
+              <div className="flex items-center gap-3"><Radio className="text-blue-500" size={24}/><span className="font-bungee text-lg">SQUAD RADIO</span></div>
+              <button onClick={() => setIsChatOpen(false)} className="hover:rotate-90 transition-all"><X size={24}/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-4 hide-scrollbar bg-slate-50">
+              {messages.map((msg) => (
+                <div key={msg.id} className={`flex flex-col ${msg.senderId === currentUser.id ? 'items-end' : 'items-start'} animate-slide-right`}>
+                  <span className="text-[9px] font-bold text-slate-400 uppercase mb-1">{msg.senderName}</span>
+                  <div className={`px-5 py-3 rounded-2xl text-sm shadow-sm max-w-[85%] ${msg.senderId === currentUser.id ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-white text-slate-700 rounded-tl-none border border-slate-100'}`}>{msg.text}</div>
                 </div>
-                <div className="w-40 h-4 bg-slate-950 rounded-full overflow-hidden p-1 shadow-inner ring-1 ring-white/5">
-                   <div className="h-full bg-red-600 rounded-full transition-all duration-1000" style={{ width: `${p.hp}%` }} />
-                </div>
-             </div>
-           ))}
-        </div>
-      </header>
-
-      <main className="flex-1 p-10 md:p-20 flex flex-col xl:flex-row gap-20 max-w-[1920px] mx-auto w-full relative">
-        <div className="flex-1 space-y-14 animate-in fade-in slide-in-from-bottom-10 duration-1000">
-           {/* Visual Scene */}
-           <div className="relative rounded-[6rem] overflow-hidden border-[10px] border-[#0f172a] shadow-[0_100px_200px_-50px_rgba(0,0,0,1)] ring-8 ring-orange-500/5 group">
-              {currentNode.imageUrl ? (
-                <img src={currentNode.imageUrl} className="w-full aspect-video object-cover group-hover:scale-110 transition-all duration-[20s] ease-linear" alt="Battle Scene" />
-              ) : (
-                <div className="w-full aspect-video bg-slate-900 flex items-center justify-center"><Loader2 className="animate-spin text-orange-500" size={100} /></div>
-              )}
-              <div className="absolute inset-0 bg-gradient-to-t from-[#020617] via-[#020617]/50 to-transparent" />
-              <div className="absolute bottom-20 left-20 right-20">
-                 <div className="bg-orange-600 w-24 h-2 mb-10 rounded-full shadow-[0_0_30px_rgba(234,88,12,1)]" />
-                 <p className="text-4xl md:text-7xl font-black text-white italic drop-shadow-[0_15px_30px_rgba(0,0,0,1)] leading-[1.05] max-w-6xl">
-                   "{currentNode.text}"
-                 </p>
-              </div>
-           </div>
-
-           {/* Interaction Section */}
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
-              {currentNode.choices.map((choice, i) => (
-                <button
-                  key={i}
-                  disabled={!isMyTurn || loading}
-                  onClick={() => makeChoice(i)}
-                  className={`relative p-14 rounded-[5rem] border-4 font-black text-3xl transition-all text-center flex flex-col items-center justify-center min-h-[250px] shadow-2xl ${
-                    isMyTurn 
-                    ? 'border-slate-800 bg-[#0f172a] text-slate-300 hover:border-orange-500 hover:bg-orange-600/25 hover:text-white hover:-translate-y-6 hover:shadow-orange-500/30' 
-                    : 'border-slate-900 bg-[#020617] text-slate-800 cursor-not-allowed grayscale'
-                  }`}
-                >
-                  <span className="relative z-10 leading-[1.2]">{choice}</span>
-                </button>
               ))}
-           </div>
-        </div>
-
-        <aside className="w-full xl:w-[500px] space-y-12 h-fit sticky top-48">
-           {/* Leaderboard */}
-           <div className="bg-[#0f172a]/95 backdrop-blur-3xl p-12 rounded-[5rem] border-4 border-slate-800 shadow-2xl space-y-10">
-              <h3 className="font-bungee text-orange-500 text-3xl flex items-center gap-6"><Trophy size={40} /> RANKING ELITE</h3>
-              <div className="space-y-6">
-                 {gameState.players.sort((a,b) => b.score - a.score).map((p, i) => (
-                   <div key={p.id} className={`flex justify-between items-center p-8 rounded-[2.5rem] transition-all ${p.id === user.id ? 'bg-orange-600/25 border-4 border-orange-500 shadow-2xl' : 'bg-[#020617]/90 border-2 border-slate-800'}`}>
-                      <div className="flex items-center gap-6">
-                        <span className={`text-4xl font-bungee ${i === 0 ? 'text-yellow-500' : 'text-slate-600'}`}>#{i+1}</span>
-                        <div>
-                          <p className="text-white font-black text-2xl uppercase leading-none mb-2">{p.name}</p>
-                          <p className={`text-[12px] font-black uppercase tracking-[0.3em] ${p.hp > 0 ? 'text-emerald-500' : 'text-red-500 animate-pulse'}`}>
-                             {p.hp > 0 ? 'STATUS: ATIVO' : 'STATUS: ABATIDO'}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-orange-600 font-bungee text-4xl">{p.score}</span>
-                        <p className="text-[10px] text-slate-700 font-black uppercase tracking-widest">PTS</p>
-                      </div>
-                   </div>
-                 ))}
+              <div ref={chatEndRef} />
+            </div>
+            <div className="p-6 border-t bg-white space-y-4">
+              <div className="flex gap-3">
+                <input type="text" placeholder="Transmitir mensagem..." value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendChat(chatInput)} className="flex-1 bg-slate-100 p-4 rounded-xl text-sm outline-none font-medium" />
+                <button onClick={() => sendChat(chatInput)} className="bg-blue-600 text-white p-4 rounded-xl hover:scale-105 transition-all"><Send size={20}/></button>
               </div>
-           </div>
-           
-           {/* Turn Status */}
-           <div className={`p-12 rounded-[5rem] border-4 transition-all duration-700 shadow-2xl ${isMyTurn ? 'border-orange-500 bg-orange-600/15 shadow-orange-500/40' : 'border-slate-800 bg-slate-900/80 opacity-60 grayscale'}`}>
-              <div className="flex items-center gap-8">
-                 <div className={`p-6 rounded-[2.5rem] shadow-2xl ${isMyTurn ? 'bg-orange-600 shadow-orange-500/50' : 'bg-slate-800 shadow-inner'}`}>
-                    {isMyTurn ? <Zap className="text-white fill-white animate-pulse" size={40} /> : <Loader2 className="animate-spin text-slate-500" size={40} />}
-                 </div>
-                 <div>
-                    <p className="text-[14px] font-black text-slate-500 uppercase tracking-[0.5em] mb-3">Comando Neural</p>
-                    <p className="text-2xl font-black text-white uppercase tracking-widest leading-none">
-                       {isMyTurn ? 'RUSH AGORA!' : `ESPERANDO ${activePlayer?.name.split(' ')[0]}`}
-                    </p>
-                 </div>
-              </div>
-           </div>
+            </div>
+          </div>
+        </>
+      )}
 
-           <button onClick={() => window.location.reload()} className="w-full py-8 text-slate-700 hover:text-red-500 font-black uppercase text-sm tracking-[0.6em] transition-all hover:tracking-[0.8em]">RECONEXÃO SQUAD</button>
-        </aside>
-      </main>
-
-      {/* Loading Overlay */}
       {loading && (
-        <div className="fixed inset-0 bg-[#020617]/99 backdrop-blur-[150px] z-[200] flex flex-col items-center justify-center space-y-16 animate-in fade-in duration-500">
-           <div className="relative scale-[2]">
-              <Flame className="text-orange-600 animate-bounce" size={140} />
-              <div className="absolute inset-0 bg-orange-600 blur-[150px] opacity-50 animate-pulse" />
-           </div>
-           <div className="text-center space-y-8">
-             <h2 className="text-8xl font-bungee text-white tracking-[0.3em] animate-pulse drop-shadow-[0_0_50px_rgba(234,88,12,0.8)] uppercase">{loadingMsg}</h2>
-             <div className="flex justify-center gap-6">
-                {[1,2,3,4,5,6].map(i => <div key={i} className="w-5 h-5 bg-orange-600 rounded-full animate-ping shadow-[0_0_20px_rgba(234,88,12,1)]" style={{ animationDelay: `${i*0.2}s` }} />)}
-             </div>
-           </div>
+        <div className="fixed inset-0 bg-slate-900/95 z-[2000] flex flex-col items-center justify-center p-10 space-y-10 text-white">
+          <div className="relative">
+            <Loader2 className="animate-spin text-blue-500" size={80}/>
+            <div className="absolute inset-0 flex items-center justify-center"><Target size={30} className="text-blue-400 animate-pulse"/></div>
+          </div>
+          <div className="text-center space-y-6 max-w-sm">
+            <h2 className="text-3xl font-bungee text-white">{loadingMsg}</h2>
+            <div className="bg-white/5 p-6 rounded-2xl border border-white/10"><p className="text-blue-200/80 font-medium text-sm italic">"{currentTip}"</p></div>
+          </div>
         </div>
+      )}
+
+      {/* VIEW: WELCOME */}
+      {gameState.view === 'Welcome' && (
+        <main className="flex-1 max-w-lg mx-auto w-full flex flex-col justify-center p-6 space-y-8 animate-fade-up">
+          <div className="bg-white rounded-[2rem] p-8 shadow-2xl border border-white space-y-6">
+            <div className="flex items-center gap-3"><ShieldAlert className="text-blue-600" size={24}/><h3 className="text-xs font-bold uppercase tracking-widest text-slate-400">Dificuldade da Missão</h3></div>
+            <div className="grid grid-cols-3 gap-3">
+              {(['Fácil', 'Médio', 'Difícil'] as DifficultyLevel[]).map(d => (
+                <button key={d} onClick={() => { setSelectedDifficulty(d); playSound(SOUNDS.CLICK); }} className={`py-4 rounded-xl font-bold text-[10px] uppercase tracking-widest transition-all border-2 ${selectedDifficulty === d ? 'bg-blue-600 border-blue-600 text-white shadow-xl shadow-blue-500/20 scale-105' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>{d}</button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4">
+             <button onClick={handleCreateRoom} className="group relative overflow-hidden bg-slate-900 rounded-[2rem] p-8 text-white flex items-center justify-between shadow-2xl transition-all hover:scale-[1.02] active:scale-95">
+                <div className="relative z-10 text-left">
+                   <h3 className="text-2xl font-bungee mb-1">CRIAR SQUAD</h3>
+                   <p className="text-blue-400 text-[10px] font-bold uppercase tracking-widest">Lidere sua equipe</p>
+                </div>
+                <div className="relative z-10 w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center border-4 border-slate-800"><Users size={28}/></div>
+                <div className="absolute -right-10 -bottom-10 opacity-10 group-hover:scale-125 transition-transform"><Users size={200}/></div>
+             </button>
+
+             <div className="bg-white rounded-[2rem] p-6 shadow-2xl border border-white space-y-6">
+                <div className="flex items-center justify-center gap-2">
+                  <Keyboard size={14} className="text-blue-600"/>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">INGRESSAR EM SQUAD ATIVO</span>
+                </div>
+                
+                <div className="flex bg-slate-50 border-2 border-slate-100 rounded-2xl overflow-hidden focus-within:border-blue-200 transition-all p-1 items-stretch h-16">
+                  <input 
+                    type="text" 
+                    placeholder="CODE" 
+                    value={inputCode} 
+                    onChange={e => setInputCode(e.target.value.toUpperCase())} 
+                    maxLength={4} 
+                    className="flex-1 bg-transparent px-6 text-center font-bungee text-2xl text-blue-600 placeholder:text-slate-300 outline-none self-center" 
+                  />
+                  <button 
+                    onClick={() => handleJoinRoom(inputCode)} 
+                    className="w-14 bg-blue-600 rounded-xl text-white flex items-center justify-center hover:bg-blue-700 active:scale-90 transition-all shadow-lg shadow-blue-600/20"
+                  >
+                    <ChevronRight size={24}/>
+                  </button>
+                </div>
+             </div>
+          </div>
+        </main>
+      )}
+
+      {/* VIEW: LOBBY */}
+      {gameState.view === 'Lobby' && (
+        <main className="flex-1 flex items-center justify-center p-6">
+          <div className="w-full max-w-sm bg-white rounded-[2.5rem] p-10 text-center space-y-10 shadow-2xl animate-scale border border-white relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-2 bg-blue-600"></div>
+            <div className="space-y-4">
+              <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-blue-600 bg-blue-50 px-4 py-2 rounded-full">SQUAD ID</span>
+              <h2 className="text-7xl font-bungee text-slate-900 tracking-tighter">{gameState.roomCode}</h2>
+              <button onClick={() => { navigator.clipboard.writeText(gameState.roomCode!); playSound(SOUNDS.CLICK); }} className="mx-auto flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase hover:text-blue-600 transition-colors"><Share2 size={14}/> Compartilhar convite</button>
+            </div>
+            
+            <div className="space-y-4 max-h-64 overflow-y-auto hide-scrollbar pr-2">
+              <div className="text-[10px] font-bold text-slate-400 text-left uppercase tracking-widest border-b border-slate-100 pb-2">Integrantes do Squad ({gameState.players.length})</div>
+              {gameState.players.map((p, idx) => (
+                <div key={p.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-white animate-slide-right" style={{ animationDelay: `${idx * 0.1}s` }}>
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-blue-600 font-bungee text-sm shadow-sm border border-slate-100">{p.name[0]}</div>
+                    <span className="font-bold text-slate-700 text-sm">{p.name} {p.id === currentUser.id && '(VOCÊ)'}</span>
+                  </div>
+                  {p.is_host && <Crown size={18} className="text-orange-500 fill-orange-500/20"/>}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <button 
+                onClick={() => isHost ? nextRound() : alert('Aguardando o Líder do Squad autorizar o início!')} 
+                disabled={!isHost && gameState.players.length < 1}
+                className={`w-full py-6 rounded-2xl font-bold text-white text-xl transition-all active:scale-95 shadow-2xl shadow-blue-600/30 ${isHost ? 'bg-blue-600 hover:bg-blue-700' : 'bg-slate-300 cursor-not-allowed opacity-80'}`}
+              >
+                {isHost ? 'INICIAR PARTIDA' : 'SQUAD PRONTO'}
+              </button>
+              
+              <button onClick={isHost ? handleCloseRoom : handleLeaveRoom} className="w-full py-4 text-xs font-bold uppercase tracking-[0.2em] text-red-500 hover:bg-red-50 rounded-xl transition-all border border-red-100">
+                {isHost ? 'Desativar Sala' : 'Sair da Sala'}
+              </button>
+            </div>
+          </div>
+        </main>
+      )}
+
+      {/* VIEW: PLAYING */}
+      {gameState.view === 'Playing' && (
+        <main className="flex-1 flex flex-col p-6 max-w-2xl mx-auto w-full space-y-6 animate-fade-up">
+          <header className="flex justify-between items-end pb-4 border-b-2 border-slate-100">
+            <div className="flex flex-col"><span className="text-[10px] font-bold uppercase tracking-[0.3em] text-blue-600">{gameState.difficulty} Mode</span><span className="font-bungee text-3xl text-slate-900">ROUND {gameState.currentRound}</span></div>
+            <div className="flex -space-x-3">
+               {gameState.players.map(p => (
+                  <div key={p.id} className={`w-12 h-12 rounded-xl border-4 border-white flex items-center justify-center font-bungee text-[14px] shadow-lg transition-all ${p.hp <= 0 ? 'bg-red-500 text-white animate-shake' : p.hasAnswered ? 'bg-green-500 text-white' : 'bg-white text-blue-600'}`}>{p.hp <= 0 ? <Skull size={20}/> : p.name[0]}</div>
+               ))}
+            </div>
+          </header>
+
+          {gameState.phase === 'Question' && (
+            <div className="space-y-6 flex-1 flex flex-col animate-scale">
+               <div className="relative aspect-video rounded-[2.5rem] overflow-hidden shadow-2xl bg-slate-900 border-4 border-white group scanline-effect">
+                  {gameState.currentQuestion?.imageUrl && <img src={gameState.currentQuestion.imageUrl} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"/>}
+                  <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 to-transparent"></div>
+                  {meInGame && (
+                    <div className="absolute bottom-6 left-6 right-6 glass-panel p-4 rounded-2xl border border-white/20 flex items-center justify-between">
+                      <div className="flex items-center gap-3"><Flame size={20} className="text-orange-500 animate-pulse"/><span className="text-slate-900 font-bungee text-xs">VITALIDADE</span></div>
+                      {renderHP(meInGame.hp)}
+                    </div>
+                  )}
+               </div>
+               
+               <div className="bg-white p-10 rounded-[2.5rem] shadow-xl border border-white flex-1 flex flex-col justify-center">
+                  <h3 className="font-bold text-slate-800 text-center text-2xl leading-relaxed italic">"{gameState.currentQuestion?.text}"</h3>
+               </div>
+
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pb-10">
+                 {gameState.currentQuestion?.choices.map((choice, i) => (
+                   <button 
+                    key={i} 
+                    disabled={meInGame?.hasAnswered || meInGame?.hp <= 0} 
+                    onClick={() => handleAnswer(i)} 
+                    className={`choice-btn py-5 rounded-2xl text-white font-bold text-lg shadow-xl active:scale-95 transition-all text-left px-8 flex items-center gap-4 ${['bg-blue-600', 'bg-green-600', 'bg-orange-500', 'bg-red-600'][i]} ${meInGame?.hasAnswered && 'opacity-40 grayscale'}`}
+                   >
+                     <span className="font-bungee opacity-40 text-2xl">{String.fromCharCode(65+i)}</span>
+                     <span className="flex-1">{choice}</span>
+                   </button>
+                 ))}
+               </div>
+            </div>
+          )}
+
+          {gameState.phase === 'Results' && (
+             <div className="flex-1 flex flex-col items-center justify-center space-y-10 animate-scale text-center">
+                <div className="space-y-4 animate-booyah">
+                  {meInGame?.lastAnswerIdx === gameState.currentQuestion?.correctAnswerIndex ? (
+                    <>
+                      <Sparkles className="text-orange-500 mx-auto" size={80}/>
+                      <h1 className="text-8xl font-bungee text-blue-600 tracking-tighter">BOOYAH!</h1>
+                    </>
+                  ) : (
+                    <>
+                      <Skull className="text-red-500 mx-auto" size={80}/>
+                      <h1 className="text-8xl font-bungee text-red-600 tracking-tighter">ELIMINADO!</h1>
+                    </>
+                  )}
+                </div>
+                <div className="bg-white p-10 rounded-[3rem] shadow-2xl border border-white w-full max-w-md space-y-4">
+                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em]">RESPOSTA TÁTICA</p>
+                   <p className="text-2xl font-bold italic text-slate-800">"{gameState.currentQuestion?.choices[gameState.currentQuestion?.correctAnswerIndex]}"</p>
+                </div>
+                <button onClick={() => updateAndBroadcast({ phase: 'Leaderboard' })} className="px-12 py-6 bg-slate-900 text-white rounded-2xl font-bold text-xl shadow-2xl active:scale-95 transition-all flex items-center gap-4">ANALISAR PERFORMANCE <ChevronRight/></button>
+             </div>
+          )}
+
+          {gameState.phase === 'Leaderboard' && (
+            <div className="flex-1 flex flex-col space-y-8 animate-fade-up">
+               <h1 className="text-5xl font-bungee text-center text-slate-900">SQUAD RANKING</h1>
+               <div className="space-y-4 flex-1 overflow-y-auto pr-2 hide-scrollbar">
+                  {gameState.players.sort((a,b) => b.score - a.score).map((p, i) => (
+                    <div key={p.id} className={`flex items-center justify-between p-6 bg-white rounded-3xl shadow-xl border-4 transition-all ${p.id === currentUser.id ? 'border-blue-600 scale-105' : 'border-white'}`} style={{animationDelay: `${i*0.1}s`}}>
+                       <div className="flex items-center gap-6">
+                         <span className="font-bungee text-slate-200 text-4xl">#{i+1}</span>
+                         <div className="flex flex-col">
+                            <span className="font-bold text-xl text-slate-800">{p.name} {p.id === currentUser.id && '(VOCÊ)'}</span>
+                            <div className="flex mt-1">{renderHP(p.hp)}</div>
+                         </div>
+                       </div>
+                       <div className="text-right">
+                          <span className="font-bungee text-3xl text-blue-600">{p.score}</span>
+                          <p className="text-[10px] font-bold uppercase text-slate-300 tracking-widest">PONTOS</p>
+                       </div>
+                    </div>
+                  ))}
+               </div>
+               {isHost ? (
+                 <button onClick={nextRound} className="w-full py-6 bg-blue-600 text-white rounded-[2rem] font-bold text-2xl shadow-2xl shadow-blue-600/30 active:scale-95 transition-all">PRÓXIMO SALTO</button>
+               ) : (
+                 <div className="bg-white p-6 rounded-[2rem] border-2 border-slate-100 text-center animate-pulse"><p className="text-xs font-bold text-blue-600 uppercase tracking-[0.2em]">Aguardando o Líder do Squad autorizar o salto...</p></div>
+               )}
+            </div>
+          )}
+        </main>
       )}
     </div>
   );
-
-  if (gameState.view === 'GameOver') return (
-    <div className="min-h-screen bg-[#020617] flex items-center justify-center p-6 font-bungee relative overflow-hidden">
-       <div className="scanline opacity-40" />
-       <div className="max-w-5xl w-full bg-[#0f172a] p-24 rounded-[7rem] border-8 border-slate-800 text-center space-y-20 animate-in zoom-in-50 duration-1000 shadow-[0_0_150px_rgba(0,0,0,1)] relative z-10">
-          <div className="space-y-8">
-             <Skull className="text-slate-800 mx-auto" size={180} />
-             <h1 className="text-[14rem] text-white leading-none tracking-tighter italic drop-shadow-2xl">GAME<br/><span className="text-orange-600 drop-shadow-[0_0_60px_rgba(234,88,12,0.6)]">OVER</span></h1>
-          </div>
-          <div className="space-y-14">
-             <p className="text-slate-500 text-3xl tracking-[0.8em] uppercase">Relatório de Batalha</p>
-             <div className="grid grid-cols-1 gap-8">
-                {gameState.players.sort((a,b) => b.score - a.score).map((p, i) => (
-                   <div key={p.id} className={`flex justify-between items-center bg-[#020617] p-12 rounded-[4rem] border-4 transition-all ${i === 0 ? 'border-yellow-500 shadow-yellow-500/20 shadow-[0_0_80px_rgba(234,179,8,0.2)] scale-110 rotate-1' : 'border-slate-800'}`}>
-                      <div className="flex items-center gap-10">
-                        <span className={`text-8xl ${i === 0 ? 'text-yellow-500' : 'text-slate-700'}`}>#{i+1}</span>
-                        <span className="text-5xl text-white uppercase tracking-tighter">{p.name}</span>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-7xl text-orange-600">{p.score}</span>
-                        <p className="text-sm text-slate-800 font-black tracking-[0.4em] uppercase">Battle Points</p>
-                      </div>
-                   </div>
-                ))}
-             </div>
-          </div>
-          <button onClick={() => window.location.href = window.location.origin} className="w-full py-12 ff-gradient rounded-[4rem] text-white text-6xl hover:scale-105 active:scale-95 transition-all shadow-[0_30px_80px_rgba(234,88,12,0.5)] border-4 border-white/20">REINICIAR OPERAÇÃO</button>
-       </div>
-    </div>
-  );
-
-  return null;
 }

@@ -1,69 +1,79 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { Player, StoryNode } from "../types";
+import { StoryNode, DifficultyLevel } from "../types";
 
-const SYSTEM_PROMPT = `VOCÊ É O MESTRE SUPREMO DO BATTLE ROYALE. 
-Sua missão é narrar uma partida competitiva e criar desafios técnicos de elite.
-Cada rodada deve conter um QUIZ TÉCNICO sobre táticas de combate, armas (M4A1, AK47, AWM) ou mecânicas de jogo.
-O tom deve ser épico, adrenalina pura e focado em Esports.
-JSON SCHEMA: { "text": "Descrição cinemática do momento", "choices": ["Opção Tática 1", "Opção Tática 2", "Opção Tática 3"], "correctAnswerIndex": 0-2 }`;
+const SYSTEM_PROMPT = `VOCÊ É O MESTRE SUPREMO DO QUIZ FREE FIRE (ESTILO COMPETITIVO).
+Sua missão é gerar desafios táticos para jogadores de elite. 
+As perguntas devem abranger: habilidades de personagens, mecânicas de armas (recuo, cadência), estratégias de rotação nos mapas (Bermuda, Purgatório, Kalahari), estatísticas de eSports e curiosidades do meta atual.
 
-export const generateGameNode = async (players: Player[], history: StoryNode[], lastChoiceIndex?: number): Promise<{ node: StoryNode, imageUrl: string }> => {
+REGRAS:
+1. Sempre forneça EXATAMENTE 4 opções de resposta.
+2. Seja técnico e use gírias do jogo (ex: "dar capa", "rushar", "looteando").
+3. Retorne APENAS o JSON puro.
+
+JSON SCHEMA: { "text": "Pergunta técnica", "choices": ["A", "B", "C", "D"], "correctAnswerIndex": 0-3 }`;
+
+export const generateGameQuestion = async (
+  roundNumber: number, 
+  difficulty: DifficultyLevel = 'Médio'
+): Promise<{ node: StoryNode, imageUrl: string }> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const isInitial = history.length === 0;
-  const currentPlayerIndex = history.length % players.length;
-  const currentPlayer = players[currentPlayerIndex];
-
-  const prompt = isInitial 
-    ? `Squad pronto: ${players.map(p => p.name).join(', ')}. Estão no avião sobrevoando o mapa Bermuda. Comece o salto.`
-    : `O jogador anterior escolheu a opção ${lastChoiceIndex}. O resultado foi ${lastChoiceIndex === history[history.length-1].correctAnswerIndex ? 'SUCESSO (BOOYAH!)' : 'FALHA (DANO RECEBIDO)'}. Agora é a vez de ${currentPlayer.name}.`;
-
-  // 1. Text Generation with Thinking (since it's a complex quiz/narrative task)
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: prompt,
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          text: { type: Type.STRING },
-          choices: { type: Type.ARRAY, items: { type: Type.STRING } },
-          correctAnswerIndex: { type: Type.INTEGER }
-        },
-        required: ["text", "choices", "correctAnswerIndex"]
-      },
-      thinkingConfig: { thinkingBudget: 1000 }
-    }
-  });
-
-  const data = JSON.parse(response.text || '{}');
-
-  // 2. Image Generation
-  const imgRes = await ai.models.generateContent({
-    model: 'gemini-2.5-flash-image',
-    contents: `Battle Royale competitive game scene, professional esports style, dramatic lighting, orange and blue accents: ${data.text}`,
-    config: {
-      imageConfig: {
-        aspectRatio: "16:9"
-      }
-    }
-  });
-
-  let imageUrl = '';
-  for (const part of imgRes.candidates[0].content.parts) {
-    if (part.inlineData) {
-      imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-      break;
-    }
-  }
-
-  return {
-    node: {
-      ...data,
-      currentPlayerId: currentPlayer.id
-    },
-    imageUrl
+  
+  const difficultyContext = {
+    'Fácil': 'Conhecimentos básicos de iniciante (Ex: "Qual personagem tem habilidade de cura passiva?")',
+    'Médio': 'Mecânicas intermediárias e mapas (Ex: "Qual arma usa munição de SMG e tem mira 4x acoplada?")',
+    'Difícil': 'Táticas de nível Pro-Player e estatísticas (Ex: "Quanto de dano por segundo causa o gás da 4ª zona?")'
   };
+
+  const prompt = `Rodada ${roundNumber} - Dificuldade ${difficulty}: Gere uma pergunta de Free Fire sobre ${difficultyContext[difficulty]}.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            text: { type: Type.STRING },
+            choices: { type: Type.ARRAY, items: { type: Type.STRING } },
+            correctAnswerIndex: { type: Type.INTEGER }
+          },
+          required: ["text", "choices", "correctAnswerIndex"]
+        }
+      }
+    });
+
+    const data = JSON.parse(response.text || '{}');
+
+    // Geração de Imagem Temática
+    let imageUrl = '';
+    try {
+      const imgRes = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: `Epic high-resolution eSports digital art, Free Fire theme, hyper-realistic, action-packed lighting, relating to: ${data.text}. Cinematic composition.`,
+        config: {
+          imageConfig: { aspectRatio: "16:9" }
+        }
+      });
+
+      if (imgRes.candidates?.[0]?.content?.parts) {
+        for (const part of imgRes.candidates[0].content.parts) {
+          if (part.inlineData) {
+            imageUrl = `data:image/png;base64,${part.inlineData.data}`;
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Imagem não gerada, usando fallback.");
+    }
+
+    return { node: data, imageUrl };
+  } catch (err) {
+    console.error("Erro Gemini:", err);
+    throw err;
+  }
 };

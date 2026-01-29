@@ -1,5 +1,5 @@
 {
-  "name": "Gemini Party Quest",
+  "name": "quizff",
   "description": "A collaborative AI-powered adventure game for friends. Create characters, choose genres, and see your story come to life with dynamic AI narration and stunning image generation.",
   "requestFramePermissions": [
     "camera"
