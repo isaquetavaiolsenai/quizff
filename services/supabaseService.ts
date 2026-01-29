@@ -12,8 +12,8 @@ let userChannel: RealtimeChannel | null = null;
 
 const handleSupabaseError = (error: any) => {
   console.error("Supabase Error Details:", error);
-  if (error?.code === 'PGRST204') {
-    return 'Erro de Schema: A coluna avatar_url não foi encontrada. Por favor, execute o script SQL de configuração no painel do Supabase.';
+  if (error?.code === 'PGRST204' || error?.code === '42703') {
+    return 'Erro de Schema: Algumas colunas (como total_score ou avatar_url) não foram encontradas. Execute o setup.sql no SQL Editor do Supabase para corrigir.';
   }
   return error?.message || 'Erro de conexão com o servidor';
 };
@@ -40,8 +40,34 @@ export const upsertProfile = async (userId: string, name: string, avatarUrl?: st
 };
 
 /**
- * Atualiza ou cria dados de perfil (Nick e Avatar)
+ * Atualiza estatísticas do jogador após a partida
  */
+export const incrementPlayerStats = async (userId: string, score: number, isWin: boolean) => {
+  if (userId.startsWith('guest_')) return { success: true }; // Não salva stats de convidados
+
+  try {
+    // Primeiro pegamos os valores atuais
+    const { data: profile } = await supabase.from('profiles').select('wins, matches, total_score').eq('id', userId).single();
+    
+    if (!profile) return { error: 'Perfil não encontrado' };
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        wins: isWin ? (profile.wins || 0) + 1 : (profile.wins || 0),
+        matches: (profile.matches || 0) + 1,
+        total_score: (profile.total_score || 0) + score,
+        last_seen: new Date().toISOString()
+      })
+      .eq('id', userId);
+
+    if (error) throw error;
+    return { success: true };
+  } catch (e) {
+    return { error: handleSupabaseError(e) };
+  }
+};
+
 export const updateProfileData = async (userId: string, data: { name?: string, avatar_url?: string }) => {
   try {
     const payload = {

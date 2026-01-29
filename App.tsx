@@ -4,7 +4,7 @@ import { Player, GameState, StoryNode, ViewState, RoundPhase, DifficultyLevel, C
 import { 
   joinRoomChannel, broadcastEvent, supabase, joinUserChannel, 
   sendPrivateMessage, searchProfiles, addFriendDB, fetchFriendsList, upsertProfile,
-  fetchAllProfiles, fetchGlobalRanking, updateProfileData, fetchProfile
+  fetchAllProfiles, fetchGlobalRanking, updateProfileData, fetchProfile, incrementPlayerStats
 } from './services/supabaseService';
 import { generateGameQuestion } from './services/geminiService';
 import { 
@@ -13,7 +13,7 @@ import {
   MessageCircle, Send, X, User as UserIcon, ShieldAlert, Heart,
   ChevronRight, Swords, Radio, AlertCircle, DoorOpen, Power,
   Keyboard, UserPlus, Check, Bell, Search, Database, Copy, Globe, Info, Fingerprint,
-  AlertTriangle, Terminal, Edit3, Image as ImageIcon, LayoutGrid, Plus, Timer, RefreshCw
+  AlertTriangle, Terminal, Edit3, Image as ImageIcon, LayoutGrid, Plus, Timer, RefreshCw, Medal
 } from 'lucide-react';
 
 const GAME_TIPS = [
@@ -85,7 +85,7 @@ export default function App() {
   const [discoverUsers, setDiscoverUsers] = useState<any[]>([]);
   const [invites, setInvites] = useState<{ roomCode: string, senderName: string }[]>([]);
   
-  // States do Perfil (Editáveis) - Inicializados vazios para evitar resets acidentais
+  // States do Perfil
   const [editName, setEditName] = useState('');
   const [editAvatar, setEditAvatar] = useState('');
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
@@ -114,7 +114,6 @@ export default function App() {
   const isFirstLoad = useRef(true);
   const lastNavRef = useRef<NavTab>('play');
 
-  // Derived state para identificar o jogador local e seu status de host
   const meInGame = useMemo(() => 
     gameState.players.find(p => p.id === currentUser?.id),
     [gameState.players, currentUser?.id]
@@ -129,7 +128,6 @@ export default function App() {
     gameStateRef.current = gameState;
   }, [gameState]);
 
-  // Sincronizar campos de edição APENAS na primeira vez que entra no perfil por sessão de navegação
   useEffect(() => {
     if (currentNav === 'profile' && lastNavRef.current !== 'profile' && currentUser) {
       setEditName(currentUser.name);
@@ -176,9 +174,9 @@ export default function App() {
         name: profileRes.data.name, 
         avatar: profileRes.data.avatar_url,
         stats: {
-          wins: profileRes.data.wins,
-          matches: profileRes.data.matches,
-          totalScore: profileRes.data.total_score
+          wins: profileRes.data.wins || 0,
+          matches: profileRes.data.matches || 0,
+          totalScore: profileRes.data.total_score || 0
         }
       }) : null);
     }
@@ -188,7 +186,10 @@ export default function App() {
   };
 
   const loadRanking = async () => {
-    const { data } = await fetchGlobalRanking();
+    const { data, error } = await fetchGlobalRanking();
+    if (error) {
+      console.error(error);
+    }
     setGlobalRanking(data);
   };
 
@@ -224,7 +225,6 @@ export default function App() {
     setIsUpdatingProfile(true);
     
     try {
-      // Se for convidado, atualiza apenas localmente
       if (currentUser.isGuest) {
         setCurrentUser(prev => prev ? ({ ...prev, name: editName.toUpperCase(), avatar: editAvatar }) : null);
         alert("Perfil de Convidado atualizado!");
@@ -239,18 +239,15 @@ export default function App() {
 
       if (res.success) {
         setCurrentUser(prev => prev ? ({ ...prev, name: editName.toUpperCase(), avatar: editAvatar }) : null);
-        
-        // Sincronizar com os outros jogadores se estiver em uma sala
         if (gameState.roomCode) {
           const updatedPlayers = gameState.players.map(p => 
             p.id === currentUser.id ? { ...p, name: editName.toUpperCase(), avatar: editAvatar } : p
           );
           updateAndBroadcast({ players: updatedPlayers });
         }
-        
-        alert("Perfil salvo no Banco de Dados!");
+        alert("Perfil salvo!");
       } else {
-        alert(res.error || "Erro ao salvar no servidor. Tente novamente.");
+        alert(res.error || "Erro ao salvar no servidor.");
       }
     } catch (e) {
       alert("Erro de conexão fatal.");
@@ -286,7 +283,7 @@ export default function App() {
       }
     });
     if (error) setAuthError(error.message);
-    else alert("Verifique seu e-mail para confirmar a conta.");
+    else alert("Verifique seu e-mail.");
     setAuthLoading(false);
   };
 
@@ -386,8 +383,21 @@ export default function App() {
     const nextRound = gameState.currentRound + 1;
     const alivePlayers = gameState.players.filter(p => p.hp > 0);
     
+    // FIM DE JOGO
     if (alivePlayers.length === 0 || nextRound > 10) {
+      setLoading(true);
+      setLoadingMsg("Sincronizando estatísticas...");
+      
+      // Salvar estatísticas no Supabase (apenas para quem não é convidado)
+      const maxScore = Math.max(...gameState.players.map(p => p.score));
+      for (const p of gameState.players) {
+        if (!p.id.startsWith('guest_')) {
+          await incrementPlayerStats(p.id, p.score, p.score === maxScore && p.score > 0);
+        }
+      }
+      
       updateAndBroadcast({ view: 'GameOver' });
+      setLoading(false);
       return;
     }
 
@@ -546,23 +556,48 @@ export default function App() {
       <main className="flex-1 flex flex-col relative overflow-y-auto hide-scrollbar pb-32">
         {gameState.view === 'Welcome' && (
           currentNav === 'ranking' ? (
-            <div className="p-6 space-y-6 animate-fade-up">
-              <div className="text-center space-y-2"><Trophy className="mx-auto text-orange-500" size={48}/><h2 className="text-3xl font-bungee">RANKING</h2></div>
+            <div className="p-6 space-y-6 animate-fade-up max-w-lg mx-auto w-full">
+              <div className="text-center space-y-2 mb-4">
+                <Trophy className="mx-auto text-orange-500" size={48}/>
+                <h2 className="text-3xl font-bungee">HALL DA FAMA</h2>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Top Operadores Global</p>
+              </div>
+              
+              <div className="space-y-4">
               {globalRanking.length === 0 ? (
-                 <div className="text-center p-10 bg-white rounded-3xl shadow-lg border-2 border-dashed border-slate-200">
+                 <div className="text-center p-12 bg-white rounded-[2.5rem] shadow-xl border-2 border-dashed border-slate-100">
                     <Database size={48} className="mx-auto text-slate-200 mb-4"/>
-                    <p className="font-bold text-slate-400 uppercase text-xs">Ainda não há dados no banco.</p>
+                    <p className="font-bold text-slate-400 uppercase text-[10px] tracking-widest">Sem dados disponíveis</p>
+                    <p className="text-[9px] text-slate-300 mt-1">Sincronize o banco usando o setup.sql</p>
                  </div>
               ) : globalRanking.map((p, i) => (
-                <div key={p.id} className="flex items-center justify-between p-5 bg-white rounded-3xl shadow-lg border-2 border-white">
+                <div key={p.id} className={`flex items-center justify-between p-5 bg-white rounded-[1.8rem] shadow-lg border-2 transition-all hover:scale-[1.02] ${i === 0 ? 'border-orange-400 bg-orange-50/30' : 'border-white'}`}>
                   <div className="flex items-center gap-4">
-                    <span className="font-bungee text-xl text-slate-300 w-8">{i + 1}</span>
-                    <img src={p.avatar_url} className="w-12 h-12 rounded-xl object-cover bg-slate-50" />
-                    <div className="flex flex-col"><span className="font-bold text-sm">{p.name}</span><span className="text-[9px] font-bold text-blue-500 uppercase">{p.wins} WINS</span></div>
+                    <div className="relative">
+                      <img src={p.avatar_url} className={`w-14 h-14 rounded-2xl object-cover bg-slate-50 border-2 ${i === 0 ? 'border-orange-400' : 'border-slate-100'}`} />
+                      {i < 3 && (
+                        <div className={`absolute -top-2 -left-2 w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shadow-lg ${i === 0 ? 'bg-orange-500' : i === 1 ? 'bg-slate-400' : 'bg-amber-700'}`}>
+                          {i + 1}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="font-bold text-slate-800 text-sm flex items-center gap-1">
+                        {p.name} 
+                        {i === 0 && <Crown size={14} className="text-orange-500"/>}
+                      </span>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-[9px] font-bold text-blue-500 uppercase flex items-center gap-1"><Medal size={10}/> {p.wins || 0} Wins</span>
+                      </div>
+                    </div>
                   </div>
-                  <span className="font-bungee text-xl text-blue-600">{p.total_score}</span>
+                  <div className="text-right">
+                    <p className="text-[9px] font-bold text-slate-400 uppercase leading-none mb-1">Score Total</p>
+                    <span className="font-bungee text-xl text-blue-600 drop-shadow-sm">{p.total_score || 0}</span>
+                  </div>
                 </div>
               ))}
+              </div>
             </div>
           ) : currentNav === 'social' ? (
             <div className="p-6 space-y-6 animate-fade-up">
@@ -652,7 +687,6 @@ export default function App() {
                         </button>
                       )}
                     </div>
-                    <p className="text-[9px] text-slate-400 px-2 leading-relaxed">Nota: Se for convidado, as alterações são locais e somem ao sair.</p>
                   </div>
                 </div>
 

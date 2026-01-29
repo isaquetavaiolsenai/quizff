@@ -2,21 +2,35 @@
 -- 1. Criar Tabela de Perfis (se não existir)
 CREATE TABLE IF NOT EXISTS public.profiles (
     id TEXT PRIMARY KEY, 
-    name TEXT NOT NULL,
-    wins INTEGER DEFAULT 0,
-    matches INTEGER DEFAULT 0,
-    total_score INTEGER DEFAULT 0
+    name TEXT NOT NULL
 );
 
--- 2. Garantir que as colunas necessárias existam (caso a tabela já existisse antes)
+-- 2. Garantir que todas as colunas necessárias existam (Migração Manual)
 DO $$ 
 BEGIN 
+    -- Coluna avatar_url
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='avatar_url') THEN
         ALTER TABLE public.profiles ADD COLUMN avatar_url TEXT DEFAULT 'https://api.dicebear.com/7.x/avataaars/svg?seed=FreeFire';
     END IF;
 
+    -- Coluna last_seen
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='last_seen') THEN
         ALTER TABLE public.profiles ADD COLUMN last_seen TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+    END IF;
+
+    -- Coluna wins
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='wins') THEN
+        ALTER TABLE public.profiles ADD COLUMN wins INTEGER DEFAULT 0;
+    END IF;
+
+    -- Coluna matches
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='matches') THEN
+        ALTER TABLE public.profiles ADD COLUMN matches INTEGER DEFAULT 0;
+    END IF;
+
+    -- Coluna total_score
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='total_score') THEN
+        ALTER TABLE public.profiles ADD COLUMN total_score INTEGER DEFAULT 0;
     END IF;
 END $$;
 
@@ -29,7 +43,7 @@ CREATE TABLE IF NOT EXISTS public.friendships (
     UNIQUE(user_id, friend_id)
 );
 
--- 4. Habilitar RLS (Segurança)
+-- 4. Habilitar RLS
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.friendships ENABLE ROW LEVEL SECURITY;
 
@@ -47,15 +61,13 @@ CREATE POLICY "Acesso público amizades" ON public.friendships FOR ALL USING (tr
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
-        IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime' AND puballtables = true) THEN
-            BEGIN
-                ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;
-            EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'profiles já na publicação';
-            END;
-            BEGIN
-                ALTER PUBLICATION supabase_realtime ADD TABLE public.friendships;
-            EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'friendships já na publicação';
-            END;
-        END IF;
+        BEGIN
+            ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles;
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END;
+        BEGIN
+            ALTER PUBLICATION supabase_realtime ADD TABLE public.friendships;
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END;
     END IF;
 END $$;
