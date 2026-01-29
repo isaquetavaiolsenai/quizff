@@ -10,8 +10,12 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 let activeChannel: RealtimeChannel | null = null;
 let userChannel: RealtimeChannel | null = null;
 
-const isMissingTableError = (error: any) => {
-  return error?.message?.includes('schema cache') || error?.message?.includes('does not exist');
+const handleSupabaseError = (error: any) => {
+  console.error("Supabase Error Details:", error);
+  if (error?.code === 'PGRST204') {
+    return 'Erro de Schema: A coluna avatar_url não foi encontrada. Por favor, execute o script SQL de configuração no painel do Supabase.';
+  }
+  return error?.message || 'Erro de conexão com o servidor';
 };
 
 /**
@@ -28,27 +32,33 @@ export const upsertProfile = async (userId: string, name: string, avatarUrl?: st
         last_seen: new Date().toISOString() 
       }, { onConflict: 'id' });
     
-    if (error && isMissingTableError(error)) return { error: 'TABLE_MISSING' };
+    if (error) throw error;
     return { success: true };
-  } catch (e) {
-    return { error: 'CONNECTION_FAILED' };
+  } catch (e: any) {
+    return { error: handleSupabaseError(e) };
   }
 };
 
 /**
- * Atualiza dados específicos como Foto e Nickname
+ * Atualiza ou cria dados de perfil (Nick e Avatar)
  */
 export const updateProfileData = async (userId: string, data: { name?: string, avatar_url?: string }) => {
   try {
+    const payload = {
+      id: userId,
+      last_seen: new Date().toISOString(),
+      ...(data.name && { name: data.name.toUpperCase() }),
+      ...(data.avatar_url && { avatar_url: data.avatar_url })
+    };
+
     const { error } = await supabase
       .from('profiles')
-      .update(data)
-      .eq('id', userId);
+      .upsert(payload, { onConflict: 'id' });
     
     if (error) throw error;
     return { success: true };
   } catch (e: any) {
-    return { error: e.message };
+    return { error: handleSupabaseError(e) };
   }
 };
 
@@ -63,7 +73,7 @@ export const fetchGlobalRanking = async () => {
     if (error) throw error;
     return { data: data || [], error: null };
   } catch (e: any) {
-    return { data: [], error: e.message };
+    return { data: [], error: handleSupabaseError(e) };
   }
 };
 
@@ -78,7 +88,7 @@ export const fetchProfile = async (userId: string) => {
     if (error) throw error;
     return { data, error: null };
   } catch (e: any) {
-    return { data: null, error: e.message };
+    return { data: null, error: handleSupabaseError(e) };
   }
 };
 
@@ -93,7 +103,7 @@ export const fetchAllProfiles = async () => {
     if (error) throw error;
     return { data: data || [], error: null };
   } catch (e: any) {
-    return { data: [], error: 'FAILED' };
+    return { data: [], error: handleSupabaseError(e) };
   }
 };
 
@@ -106,7 +116,7 @@ export const searchProfiles = async (query: string) => {
       .ilike('name', `%${query}%`)
       .limit(10);
     
-    if (error) return { data: [], error: error.message };
+    if (error) return { data: [], error: handleSupabaseError(error) };
     return { data: data || [], error: null };
   } catch (e) {
     return { data: [], error: 'FAILED' };
@@ -119,7 +129,7 @@ export const addFriendDB = async (userId: string, friendId: string) => {
       .from('friendships')
       .insert({ user_id: userId, friend_id: friendId });
     
-    if (error) return { success: false, error: error.message };
+    if (error) return { success: false, error: handleSupabaseError(error) };
     return { success: true, error: null };
   } catch (e) {
     return { success: false, error: 'FAILED' };
@@ -136,7 +146,7 @@ export const fetchFriendsList = async (userId: string): Promise<{ data: Friend[]
       `)
       .eq('user_id', userId);
 
-    if (error) return { data: [], error: error.message };
+    if (error) return { data: [], error: handleSupabaseError(error) };
 
     const friends = (data || []).map((f: any) => ({
       id: String(f.profiles?.id || f.friend_id),
