@@ -10,14 +10,10 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 let activeChannel: RealtimeChannel | null = null;
 let userChannel: RealtimeChannel | null = null;
 
-// Verifica se o erro é de tabela não encontrada
 const isMissingTableError = (error: any) => {
   return error?.message?.includes('schema cache') || error?.message?.includes('does not exist');
 };
 
-/**
- * Persistência de Perfil Público
- */
 export const upsertProfile = async (userId: string, name: string) => {
   try {
     const { error } = await supabase
@@ -28,102 +24,117 @@ export const upsertProfile = async (userId: string, name: string) => {
         last_seen: new Date().toISOString() 
       }, { onConflict: 'id' });
     
-    if (error) {
-      if (isMissingTableError(error)) {
-        console.warn("⚠️ Banco de dados não configurado: Tabela 'profiles' ausente.");
-        return { error: 'TABLE_MISSING' };
-      }
-      console.error("❌ Erro ao salvar perfil:", error.message);
-    }
+    if (error && isMissingTableError(error)) return { error: 'TABLE_MISSING' };
     return { success: true };
   } catch (e) {
     return { error: 'CONNECTION_FAILED' };
   }
 };
 
-/**
- * Lista todos os perfis registrados
- */
+export const updateProfileData = async (userId: string, data: { name?: string, avatar_url?: string }) => {
+  try {
+    const { error } = await supabase
+      .from('profiles')
+      .update(data)
+      .eq('id', userId);
+    
+    if (error) throw error;
+    return { success: true };
+  } catch (e: any) {
+    return { error: e.message };
+  }
+};
+
+export const fetchGlobalRanking = async () => {
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, name, avatar_url, total_score, wins')
+      .order('total_score', { ascending: false })
+      .limit(50);
+    
+    if (error) throw error;
+    return { data: data || [], error: null };
+  } catch (e: any) {
+    return { data: [], error: e.message };
+  }
+};
+
+export const fetchProfile = async (userId: string) => {
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    
+    if (error) throw error;
+    return { data, error: null };
+  } catch (e: any) {
+    return { data: null, error: e.message };
+  }
+};
+
 export const fetchAllProfiles = async () => {
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, name, last_seen')
+      .select('id, name, avatar_url, last_seen')
       .order('last_seen', { ascending: false })
       .limit(50);
     
-    if (error) {
-      if (isMissingTableError(error)) throw new Error('TABLE_MISSING');
-      throw error;
-    }
+    if (error) throw error;
     return { data: data || [], error: null };
   } catch (e: any) {
-    return { data: [], error: e.message === 'TABLE_MISSING' ? 'TABLE_MISSING' : 'FAILED' };
+    return { data: [], error: 'FAILED' };
   }
 };
 
-/**
- * Busca de Operadores por Nome
- */
 export const searchProfiles = async (query: string) => {
   if (!query || query.length < 2) return { data: [], error: null };
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, name')
+      .select('id, name, avatar_url')
       .ilike('name', `%${query}%`)
       .limit(10);
     
-    if (error) {
-      if (isMissingTableError(error)) return { data: [], error: 'TABLE_MISSING' };
-      return { data: [], error: error.message };
-    }
+    if (error) return { data: [], error: error.message };
     return { data: data || [], error: null };
   } catch (e) {
     return { data: [], error: 'FAILED' };
   }
 };
 
-/**
- * Gestão de Amizades no Banco
- */
 export const addFriendDB = async (userId: string, friendId: string) => {
   try {
     const { error } = await supabase
       .from('friendships')
       .insert({ user_id: userId, friend_id: friendId });
     
-    if (error) {
-      if (isMissingTableError(error)) return { success: false, error: 'TABLE_MISSING' };
-      return { success: false, error: error.message };
-    }
+    if (error) return { success: false, error: error.message };
     return { success: true, error: null };
   } catch (e) {
     return { success: false, error: 'FAILED' };
   }
 };
 
-/**
- * Puxa a lista de amigos reais do banco de dados
- */
 export const fetchFriendsList = async (userId: string): Promise<{ data: Friend[], error: string | null }> => {
   try {
     const { data, error } = await supabase
       .from('friendships')
       .select(`
         friend_id,
-        profiles:friend_id (id, name)
+        profiles:friend_id (id, name, avatar_url)
       `)
       .eq('user_id', userId);
 
-    if (error) {
-      if (isMissingTableError(error)) return { data: [], error: 'TABLE_MISSING' };
-      return { data: [], error: error.message };
-    }
+    if (error) return { data: [], error: error.message };
 
     const friends = (data || []).map((f: any) => ({
       id: String(f.profiles?.id || f.friend_id),
       name: String(f.profiles?.name || "Operador Desconhecido"),
+      avatar: f.profiles?.avatar_url,
       status: 'online' as 'online'
     }));
 
