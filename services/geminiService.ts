@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { StoryNode, DifficultyLevel, GameMode } from "../types";
+import { StoryNode, DifficultyLevel, GameMode } from "../types.ts";
 
 const DEFAULT_TOPICS = [
   "Free Fire: Personagens e Habilidades",
@@ -36,7 +36,6 @@ export const generateGameQuestion = async (
   `;
 
   try {
-    // 1. Gerar Pergunta (Texto)
     const textRes = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: `Gere uma pergunta de ${isTF ? 'Verdadeiro ou Falso' : 'múltipla escolha (4 opções)'} sobre: ${activeTopic}.`,
@@ -58,7 +57,6 @@ export const generateGameQuestion = async (
     const data = JSON.parse(textRes.text || '{}');
     if (isTF) data.choices = ["VERDADEIRO", "FALSO"];
 
-    // 2. Gerar Imagem (Opcional - tenta mas não trava se falhar)
     let imageUrl = '';
     try {
       const imgRes = await ai.models.generateContent({

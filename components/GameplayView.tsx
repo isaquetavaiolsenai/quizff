@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { Heart, Image as ImageIcon, Check, Skull, ChevronRight } from 'lucide-react';
-import { GameState } from '../types';
+import { GameState } from '../types.ts';
 
 interface Props {
   gameState: GameState;

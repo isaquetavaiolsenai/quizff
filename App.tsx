@@ -1,29 +1,21 @@
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Player, GameState, StoryNode, ViewState, DifficultyLevel, User, GameMode } from './types';
+import React, { useState, useEffect, useRef } from 'react';
+import { Player, GameState, User } from './types.ts';
 import { 
-  joinRoomChannel, broadcastEvent, supabase, 
-  fetchProfile, incrementPlayerStats
-} from './services/supabaseService';
-import { generateGameQuestion } from './services/geminiService';
+  joinRoomChannel, broadcastEvent, supabase 
+} from './services/supabaseService.ts';
+import { generateGameQuestion } from './services/geminiService.ts';
 
-// Importação de Componentes Modulares
-import AuthView from './components/AuthView';
-import HomeView from './components/HomeView';
-import LobbyView from './components/LobbyView';
-import GameplayView from './components/GameplayView';
-import GameOverView from './components/GameOverView';
-import ProfileView from './components/ProfileView';
-import RankingView from './components/RankingView';
-import Navbar from './components/Navbar';
-import LoadingOverlay from './components/LoadingOverlay';
-
-const PRESET_AVATARS = [
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix',
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Aneka',
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Toby',
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Buster'
-];
+// Imports com extensões obrigatórias para evitar tela branca
+import AuthView from './components/AuthView.tsx';
+import HomeView from './components/HomeView.tsx';
+import LobbyView from './components/LobbyView.tsx';
+import GameplayView from './components/GameplayView.tsx';
+import GameOverView from './components/GameOverView.tsx';
+import ProfileView from './components/ProfileView.tsx';
+import RankingView from './components/RankingView.tsx';
+import Navbar from './components/Navbar.tsx';
+import LoadingOverlay from './components/LoadingOverlay.tsx';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -40,37 +32,27 @@ export default function App() {
   const stateRef = useRef(gameState);
   useEffect(() => { stateRef.current = gameState; }, [gameState]);
 
-  // Gerenciamento de Autenticação
+  // Auth Effect
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) mapUser(session.user);
+      if (session?.user) handleAuth(session.user);
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
-      if (session?.user) mapUser(session.user);
+      if (session?.user) handleAuth(session.user);
       else setCurrentUser(null);
     });
     return () => subscription.unsubscribe();
   }, []);
 
-  const mapUser = (sbUser: any) => {
+  const handleAuth = (sbUser: any) => {
     setCurrentUser({
-      id: sbUser.id, name: (sbUser.user_metadata.name || "PLAYER").toUpperCase(),
-      email: sbUser.email, isGuest: false, avatar: sbUser.user_metadata.avatar_url || PRESET_AVATARS[0],
+      id: sbUser.id,
+      name: (sbUser.user_metadata.name || "PLAYER").toUpperCase(),
+      email: sbUser.email,
+      isGuest: false,
+      avatar: sbUser.user_metadata.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${sbUser.id}`,
       level: 1, xp: 0, stats: { wins: 0, matches: 0, totalScore: 0 }
     });
-  };
-
-  // Handlers de Sala e Realtime
-  const onRealtimeMsg = (event: string, payload: any) => {
-    const cur = stateRef.current;
-    if (event === 'SYNC_STATE') setGameState(s => ({ ...s, ...payload }));
-    if (event === 'JOIN_REQUEST' && cur.players.find(p => p.id === currentUser?.id)?.is_host) {
-      if (!cur.players.find(p => p.id === payload.id)) {
-        const newP: Player = { ...payload, is_host: false, hp: 100, score: 0, hasAnswered: false, lastAnswerIdx: null, isReady: true };
-        const updated = [...cur.players, newP];
-        updateState({ players: updated });
-      }
-    }
   };
 
   const updateState = (newState: Partial<GameState>) => {
@@ -81,11 +63,22 @@ export default function App() {
     });
   };
 
+  const onRealtimeMsg = (event: string, payload: any) => {
+    const cur = stateRef.current;
+    if (event === 'SYNC_STATE') setGameState(s => ({ ...s, ...payload }));
+    if (event === 'JOIN_REQUEST' && cur.players.find(p => p.id === currentUser?.id)?.is_host) {
+      if (!cur.players.find(p => p.id === payload.id)) {
+        const newP: Player = { ...payload, is_host: false, hp: 100, score: 0, hasAnswered: false, lastAnswerIdx: null, isReady: true };
+        updateState({ players: [...cur.players, newP] });
+      }
+    }
+  };
+
   const createRoom = async (theme: string, rounds: number) => {
     if (!currentUser) return;
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
     setLoading(true);
-    setLoadingMsg("Criando Sala...");
+    setLoadingMsg("CONFIGURANDO SERVIDOR...");
     try {
       await joinRoomChannel(code, onRealtimeMsg);
       const host: Player = { id: currentUser.id, name: currentUser.name, is_host: true, hp: 100, score: 0, lastAnswerIdx: null, hasAnswered: false, isReady: true, avatar: currentUser.avatar };
@@ -101,18 +94,18 @@ export default function App() {
   const joinRoom = async (code: string) => {
     if (!code || !currentUser) return;
     setLoading(true);
+    setLoadingMsg("RUSHANDO NA SALA...");
     try {
       await joinRoomChannel(code, onRealtimeMsg);
       broadcastEvent(code, 'JOIN_REQUEST', { id: currentUser.id, name: currentUser.name, avatar: currentUser.avatar });
       setGameState(s => ({ ...s, view: 'Lobby', roomCode: code }));
-    } catch (e) { alert("Sala indisponível."); }
+    } catch (e) { alert("Sala não encontrada."); }
     setLoading(false);
   };
 
-  // Ciclo de Vida do Jogo
   const startGame = async () => {
     setLoading(true);
-    setLoadingMsg("Gerando Desafio IA...");
+    setLoadingMsg("CARREGANDO DESAFIO...");
     try {
       const { node, imageUrl } = await generateGameQuestion(1, gameState.difficulty, gameState.gameMode, gameState.customTopic);
       updateState({
@@ -120,12 +113,13 @@ export default function App() {
         currentQuestion: { ...node, imageUrl },
         players: gameState.players.map(p => ({ ...p, hp: 100, score: 0, hasAnswered: false, lastAnswerIdx: null }))
       });
-    } catch (e) { alert("IA ocupada. Tente novamente."); }
+    } catch (e) { alert("IA ocupada."); }
     setLoading(false);
   };
 
   const submitAnswer = (idx: number) => {
-    if (gameState.players.find(p => p.id === currentUser?.id)?.hasAnswered) return;
+    const me = gameState.players.find(p => p.id === currentUser?.id);
+    if (!me || me.hasAnswered) return;
     const isCorrect = idx === gameState.currentQuestion?.correctAnswerIndex;
     const updated = gameState.players.map(p => p.id === currentUser?.id ? {
       ...p, hasAnswered: true, lastAnswerIdx: idx, 
@@ -142,7 +136,7 @@ export default function App() {
       return;
     }
     setLoading(true);
-    setLoadingMsg(`Carregando Rodada ${next}...`);
+    setLoadingMsg(`RODADA ${next} INICIANDO...`);
     try {
       const { node, imageUrl } = await generateGameQuestion(next, gameState.difficulty, gameState.gameMode, gameState.customTopic);
       updateState({
@@ -150,66 +144,34 @@ export default function App() {
         phase: 'Question',
         players: gameState.players.map(p => ({ ...p, hasAnswered: false, lastAnswerIdx: null }))
       });
-    } catch (e) { alert("Erro na API Gemini."); }
+    } catch (e) { alert("Erro de rede."); }
     setLoading(false);
   };
 
-  const resetGame = () => {
-    setGameState({
-      view: 'Welcome', phase: 'Question', roomCode: null, players: [],
-      currentRound: 0, maxRounds: 5, currentQuestion: null,
-      difficulty: 'Médio', gameMode: 'Quiz', customTopic: null
-    });
+  const reset = () => {
+    setGameState(s => ({ ...s, view: 'Welcome', roomCode: null }));
     setCurrentNav('play');
   };
 
-  // Visualização Principal
   if (!currentUser) return <AuthView onGuest={setCurrentUser} />;
 
   return (
-    <div className="min-h-screen flex flex-col relative max-w-lg mx-auto w-full">
-      {gameState.view === 'Welcome' && currentNav === 'play' && (
-        <HomeView 
-          user={currentUser} 
-          onCreate={createRoom} 
-          onJoin={joinRoom} 
-          onProfileClick={() => setCurrentNav('profile')}
-        />
-      )}
-      
-      {gameState.view === 'Welcome' && currentNav === 'ranking' && <RankingView />}
-      {gameState.view === 'Welcome' && currentNav === 'profile' && <ProfileView user={currentUser} onBack={() => setCurrentNav('play')} />}
+    <div className="min-h-screen bg-[#0A0F1E] flex flex-col max-w-lg mx-auto w-full shadow-2xl shadow-blue-900/20">
+      <main className="flex-1 pb-32 overflow-y-auto hide-scrollbar">
+        {gameState.view === 'Welcome' && (
+          <>
+            {currentNav === 'play' && <HomeView user={currentUser} onCreate={createRoom} onJoin={joinRoom} onProfileClick={() => setCurrentNav('profile')} />}
+            {currentNav === 'ranking' && <RankingView />}
+            {currentNav === 'profile' && <ProfileView user={currentUser} onBack={() => setCurrentNav('play')} />}
+          </>
+        )}
+        
+        {gameState.view === 'Lobby' && <LobbyView gameState={gameState} userId={currentUser.id} onStart={startGame} onExit={reset} onUpdateTopic={(t) => updateState({ customTopic: t })} />}
+        {gameState.view === 'Playing' && <GameplayView gameState={gameState} userId={currentUser.id} onAnswer={submitAnswer} onNext={nextRound} />}
+        {gameState.view === 'GameOver' && <GameOverView players={gameState.players} onRestart={reset} />}
+      </main>
 
-      {gameState.view === 'Lobby' && (
-        <LobbyView 
-          gameState={gameState} 
-          userId={currentUser.id} 
-          onStart={startGame} 
-          onExit={resetGame}
-          onUpdateTopic={(t) => updateState({ customTopic: t })}
-        />
-      )}
-
-      {gameState.view === 'Playing' && (
-        <GameplayView 
-          gameState={gameState} 
-          userId={currentUser.id} 
-          onAnswer={submitAnswer} 
-          onNext={nextRound} 
-        />
-      )}
-
-      {gameState.view === 'GameOver' && (
-        <GameOverView 
-          players={gameState.players} 
-          onRestart={resetGame} 
-        />
-      )}
-
-      {gameState.view === 'Welcome' && (
-        <Navbar active={currentNav} onNav={setCurrentNav} />
-      )}
-
+      {gameState.view === 'Welcome' && <Navbar active={currentNav} onNav={setCurrentNav} />}
       {loading && <LoadingOverlay message={loadingMsg} />}
     </div>
   );

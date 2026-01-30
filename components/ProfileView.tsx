@@ -1,8 +1,8 @@
 
 import React from 'react';
 import { User as UserIcon, LogOut, ChevronLeft, Target, Award, Play } from 'lucide-react';
-import { User } from '../types';
-import { supabase } from '../services/supabaseService';
+import { User } from '../types.ts';
+import { supabase } from '../services/supabaseService.ts';
 
 interface Props {
   user: User;
