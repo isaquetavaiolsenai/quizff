@@ -1,13 +1,12 @@
-
 import React from 'react';
 import { Swords, Zap, Chrome } from 'lucide-react';
 import { User } from '../types.ts';
 
-interface AuthViewProps {
+interface AuthPageProps {
   onGuest: (user: User) => void;
 }
 
-const AuthView: React.FC<AuthViewProps> = ({ onGuest }) => {
+const AuthPage: React.FC<AuthPageProps> = ({ onGuest }) => {
   const handleGuestSignIn = () => {
     const guestUser: User = {
       id: `guest_${Math.random().toString(36).substring(2, 7)}`,
@@ -22,18 +21,14 @@ const AuthView: React.FC<AuthViewProps> = ({ onGuest }) => {
   };
 
   return (
-    <main 
-      className="min-h-screen bg-[#0A0F1E] flex flex-col items-center justify-center p-8 relative overflow-hidden"
-      role="main"
-    >
-      {/* Background Decor */}
+    <main className="min-h-screen bg-[#0A0F1E] flex flex-col items-center justify-center p-8 relative overflow-hidden">
       <div className="absolute top-[-15%] left-[-10%] w-96 h-96 bg-blue-600/10 rounded-full blur-[120px]" />
       <div className="absolute bottom-[-15%] right-[-10%] w-96 h-96 bg-orange-600/10 rounded-full blur-[120px]" />
 
       <section className="w-full max-w-sm z-10 text-center space-y-12 animate-slide-up">
         <header className="relative inline-block">
           <div className="w-28 h-28 bg-gradient-to-br from-blue-600 to-cyan-500 rounded-[2.5rem] mx-auto flex items-center justify-center shadow-2xl shadow-blue-500/40 border-4 border-white/10 transform rotate-6">
-            <Swords size={56} className="text-white drop-shadow-md" aria-hidden="true" />
+            <Swords size={56} className="text-white drop-shadow-md" />
           </div>
           <Zap className="absolute -top-3 -right-3 text-yellow-400 fill-yellow-400 animate-pulse" size={32} />
         </header>
@@ -48,7 +43,6 @@ const AuthView: React.FC<AuthViewProps> = ({ onGuest }) => {
         <nav className="flex flex-col gap-4">
           <button 
             onClick={handleGuestSignIn}
-            aria-label="Iniciar como convidado"
             className="w-full py-6 bg-blue-600 hover:bg-blue-500 text-white rounded-[2rem] font-bungee text-2xl shadow-[0_10px_0_#1d4ed8] active:shadow-none active:translate-y-2 transition-all"
           >
             SOLO RUSH
@@ -60,20 +54,13 @@ const AuthView: React.FC<AuthViewProps> = ({ onGuest }) => {
             <div className="h-[1px] flex-1 bg-slate-800" />
           </div>
 
-          <button 
-            className="w-full py-5 glass hover:bg-white/5 rounded-[2rem] font-bold text-sm text-slate-300 flex items-center justify-center gap-3 transition-colors border border-white/5"
-            aria-label="Entrar com Google"
-          >
+          <button className="w-full py-5 glass hover:bg-white/5 rounded-[2rem] font-bold text-sm text-slate-300 flex items-center justify-center gap-3 transition-colors border border-white/5">
             <Chrome size={20} /> ENTRAR COM GOOGLE
           </button>
         </nav>
       </section>
-
-      <footer className="absolute bottom-8 text-[9px] font-bold text-slate-700 uppercase tracking-widest">
-        Powered by Google Gemini & Supabase
-      </footer>
     </main>
   );
 };
 
-export default React.memo(AuthView);
+export default AuthPage;

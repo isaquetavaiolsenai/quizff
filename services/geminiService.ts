@@ -15,7 +15,10 @@ export const generateGameQuestion = async (
   gameMode: GameMode = 'Quiz',
   customTopic: string | null = null
 ): Promise<{ node: StoryNode, imageUrl: string }> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  // Verificação de segurança para o ambiente do navegador
+  const apiKey = (window as any).process?.env?.API_KEY || "";
+  
+  const ai = new GoogleGenAI({ apiKey: apiKey });
   
   const isCustom = !!customTopic && customTopic.trim().length > 0;
   const activeTopic = isCustom ? customTopic.trim() : DEFAULT_TOPICS[Math.floor(Math.random() * DEFAULT_TOPICS.length)];
@@ -67,20 +70,17 @@ export const generateGameQuestion = async (
       const part = imgRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
       if (part?.inlineData) imageUrl = `data:image/png;base64,${part.inlineData.data}`;
     } catch (e) {
-      console.warn("Imagem não gerada devido a quota.");
+      console.warn("Imagem não gerada.");
     }
 
     return { node: data, imageUrl };
 
   } catch (err: any) {
     console.error("Gemini Error:", err);
-    const isQuota = err?.message?.includes('429');
     return {
       node: {
-        text: isQuota 
-          ? `[LIMITE ATINGIDO] Aguarde um instante para a próxima pergunta sobre ${activeTopic}.` 
-          : `Erro ao gerar pergunta sobre ${activeTopic}. Quer tentar de novo?`,
-        choices: ["TENTAR NOVAMENTE", "MUDAR TEMA", "SAIR", "AGUARDAR"],
+        text: `Erro ao gerar desafio. Verifique sua conexão.`,
+        choices: ["TENTAR NOVAMENTE", "SAIR"],
         correctAnswerIndex: 0
       },
       imageUrl: ''

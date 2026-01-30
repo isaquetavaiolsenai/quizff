@@ -1,7 +1,5 @@
 {
-  "name": "quizff",
-  "description": "A collaborative AI-powered adventure game for friends. Create characters, choose genres, and see your story come to life with dynamic AI narration and stunning image generation.",
-  "requestFramePermissions": [
-    "camera"
-  ]
+  "name": "Quiz Squad",
+  "description": "Collaborative AI Quiz Battle for friends. Generate custom themes and battle for the Booyah!",
+  "requestFramePermissions": []
 }

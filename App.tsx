@@ -1,19 +1,18 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { Player, GameState, User } from './types.ts';
-import { 
-  joinRoomChannel, broadcastEvent, supabase 
-} from './services/supabaseService.ts';
+import { joinRoomChannel, broadcastEvent, supabase } from './services/supabaseService.ts';
 import { generateGameQuestion } from './services/geminiService.ts';
 
-// Imports com extensões obrigatórias para evitar tela branca
-import AuthView from './components/AuthView.tsx';
-import HomeView from './components/HomeView.tsx';
-import LobbyView from './components/LobbyView.tsx';
-import GameplayView from './components/GameplayView.tsx';
-import GameOverView from './components/GameOverView.tsx';
-import ProfileView from './components/ProfileView.tsx';
-import RankingView from './components/RankingView.tsx';
+// Pages
+import AuthPage from './pages/AuthPage.tsx';
+import HomePage from './pages/HomePage.tsx';
+import LobbyPage from './pages/LobbyPage.tsx';
+import GameplayPage from './pages/GameplayPage.tsx';
+import GameOverPage from './pages/GameOverPage.tsx';
+import ProfilePage from './pages/ProfilePage.tsx';
+import RankingPage from './pages/RankingPage.tsx';
+
+// Components
 import Navbar from './components/Navbar.tsx';
 import LoadingOverlay from './components/LoadingOverlay.tsx';
 
@@ -32,7 +31,6 @@ export default function App() {
   const stateRef = useRef(gameState);
   useEffect(() => { stateRef.current = gameState; }, [gameState]);
 
-  // Auth Effect
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) handleAuth(session.user);
@@ -78,7 +76,7 @@ export default function App() {
     if (!currentUser) return;
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
     setLoading(true);
-    setLoadingMsg("CONFIGURANDO SERVIDOR...");
+    setLoadingMsg("INICIANDO SQUAD...");
     try {
       await joinRoomChannel(code, onRealtimeMsg);
       const host: Player = { id: currentUser.id, name: currentUser.name, is_host: true, hp: 100, score: 0, lastAnswerIdx: null, hasAnswered: false, isReady: true, avatar: currentUser.avatar };
@@ -94,7 +92,7 @@ export default function App() {
   const joinRoom = async (code: string) => {
     if (!code || !currentUser) return;
     setLoading(true);
-    setLoadingMsg("RUSHANDO NA SALA...");
+    setLoadingMsg("BUSCANDO SALA...");
     try {
       await joinRoomChannel(code, onRealtimeMsg);
       broadcastEvent(code, 'JOIN_REQUEST', { id: currentUser.id, name: currentUser.name, avatar: currentUser.avatar });
@@ -105,7 +103,7 @@ export default function App() {
 
   const startGame = async () => {
     setLoading(true);
-    setLoadingMsg("CARREGANDO DESAFIO...");
+    setLoadingMsg("GERANDO DESAFIO IA...");
     try {
       const { node, imageUrl } = await generateGameQuestion(1, gameState.difficulty, gameState.gameMode, gameState.customTopic);
       updateState({
@@ -113,7 +111,7 @@ export default function App() {
         currentQuestion: { ...node, imageUrl },
         players: gameState.players.map(p => ({ ...p, hp: 100, score: 0, hasAnswered: false, lastAnswerIdx: null }))
       });
-    } catch (e) { alert("IA ocupada."); }
+    } catch (e) { alert("IA ocupada no momento."); }
     setLoading(false);
   };
 
@@ -136,7 +134,7 @@ export default function App() {
       return;
     }
     setLoading(true);
-    setLoadingMsg(`RODADA ${next} INICIANDO...`);
+    setLoadingMsg(`RODADA ${next}...`);
     try {
       const { node, imageUrl } = await generateGameQuestion(next, gameState.difficulty, gameState.gameMode, gameState.customTopic);
       updateState({
@@ -144,7 +142,7 @@ export default function App() {
         phase: 'Question',
         players: gameState.players.map(p => ({ ...p, hasAnswered: false, lastAnswerIdx: null }))
       });
-    } catch (e) { alert("Erro de rede."); }
+    } catch (e) { alert("Erro de conexão."); }
     setLoading(false);
   };
 
@@ -153,22 +151,22 @@ export default function App() {
     setCurrentNav('play');
   };
 
-  if (!currentUser) return <AuthView onGuest={setCurrentUser} />;
+  if (!currentUser) return <AuthPage onGuest={setCurrentUser} />;
 
   return (
     <div className="min-h-screen bg-[#0A0F1E] flex flex-col max-w-lg mx-auto w-full shadow-2xl shadow-blue-900/20">
       <main className="flex-1 pb-32 overflow-y-auto hide-scrollbar">
         {gameState.view === 'Welcome' && (
           <>
-            {currentNav === 'play' && <HomeView user={currentUser} onCreate={createRoom} onJoin={joinRoom} onProfileClick={() => setCurrentNav('profile')} />}
-            {currentNav === 'ranking' && <RankingView />}
-            {currentNav === 'profile' && <ProfileView user={currentUser} onBack={() => setCurrentNav('play')} />}
+            {currentNav === 'play' && <HomePage user={currentUser} onCreate={createRoom} onJoin={joinRoom} onProfileClick={() => setCurrentNav('profile')} />}
+            {currentNav === 'ranking' && <RankingPage />}
+            {currentNav === 'profile' && <ProfilePage user={currentUser} onBack={() => setCurrentNav('play')} />}
           </>
         )}
         
-        {gameState.view === 'Lobby' && <LobbyView gameState={gameState} userId={currentUser.id} onStart={startGame} onExit={reset} onUpdateTopic={(t) => updateState({ customTopic: t })} />}
-        {gameState.view === 'Playing' && <GameplayView gameState={gameState} userId={currentUser.id} onAnswer={submitAnswer} onNext={nextRound} />}
-        {gameState.view === 'GameOver' && <GameOverView players={gameState.players} onRestart={reset} />}
+        {gameState.view === 'Lobby' && <LobbyPage gameState={gameState} userId={currentUser.id} onStart={startGame} onExit={reset} onUpdateTopic={(t) => updateState({ customTopic: t })} />}
+        {gameState.view === 'Playing' && <GameplayPage gameState={gameState} userId={currentUser.id} onAnswer={submitAnswer} onNext={nextRound} />}
+        {gameState.view === 'GameOver' && <GameOverPage players={gameState.players} onRestart={reset} />}
       </main>
 
       {gameState.view === 'Welcome' && <Navbar active={currentNav} onNav={setCurrentNav} />}
