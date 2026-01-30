@@ -1,9 +1,8 @@
 
 export type Genre = 'Battle Royale';
-
 export type RoundPhase = 'Question' | 'Results' | 'Leaderboard';
-
 export type DifficultyLevel = 'Fácil' | 'Médio' | 'Difícil';
+export type GameMode = 'Quiz' | 'TrueFalse';
 
 export interface ChatMessage {
   id: string;
@@ -62,6 +61,9 @@ export interface GameState {
   roomCode: string | null;
   players: Player[];
   currentRound: number;
+  maxRounds: number;
   currentQuestion: StoryNode | null;
   difficulty: DifficultyLevel;
+  gameMode: GameMode;
+  customTopic: string | null;
 }

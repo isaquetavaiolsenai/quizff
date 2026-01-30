@@ -1,38 +1,47 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { StoryNode, DifficultyLevel } from "../types";
+import { StoryNode, DifficultyLevel, GameMode } from "../types";
 
-const SYSTEM_PROMPT = `VOCÊ É O MESTRE SUPREMO DO QUIZ FREE FIRE (ESTILO COMPETITIVO).
-Sua missão é gerar desafios táticos para jogadores de elite. 
-As perguntas devem abranger: habilidades de personagens, mecânicas de armas (recuo, cadência), estratégias de rotação nos mapas (Bermuda, Purgatório, Kalahari), estatísticas de eSports e curiosidades do meta atual.
-
-REGRAS:
-1. Sempre forneça EXATAMENTE 4 opções de resposta.
-2. Seja técnico e use gírias do jogo (ex: "dar capa", "rushar", "looteando").
-3. Retorne APENAS o JSON puro.
-
-JSON SCHEMA: { "text": "Pergunta técnica", "choices": ["A", "B", "C", "D"], "correctAnswerIndex": 0-3 }`;
+const DEFAULT_TOPICS = [
+  "Free Fire: Personagens e Habilidades",
+  "Free Fire: Mapas e Estratégias",
+  "Free Fire: Atributos de Armas",
+  "Free Fire: Lore e Curiosidades"
+];
 
 export const generateGameQuestion = async (
   roundNumber: number, 
-  difficulty: DifficultyLevel = 'Médio'
+  difficulty: DifficultyLevel = 'Médio',
+  gameMode: GameMode = 'Quiz',
+  customTopic: string | null = null
 ): Promise<{ node: StoryNode, imageUrl: string }> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  const difficultyContext = {
-    'Fácil': 'Conhecimentos básicos de iniciante (Ex: "Qual personagem tem habilidade de cura passiva?")',
-    'Médio': 'Mecânicas intermediárias e mapas (Ex: "Qual arma usa munição de SMG e tem mira 4x acoplada?")',
-    'Difícil': 'Táticas de nível Pro-Player e estatísticas (Ex: "Quanto de dano por segundo causa o gás da 4ª zona?")'
-  };
+  const isCustom = !!customTopic && customTopic.trim().length > 0;
+  const activeTopic = isCustom ? customTopic.trim() : DEFAULT_TOPICS[Math.floor(Math.random() * DEFAULT_TOPICS.length)];
+  const isTF = gameMode === 'TrueFalse';
 
-  const prompt = `Rodada ${roundNumber} - Dificuldade ${difficulty}: Gere uma pergunta de Free Fire sobre ${difficultyContext[difficulty]}.`;
+  let systemInstruction = `Você é um motor de jogo de Quiz inteligente. `;
+  if (isCustom) {
+    systemInstruction += `O tema atual é: "${activeTopic}". Esqueça Free Fire e foque apenas neste assunto. `;
+  } else {
+    systemInstruction += `O tema é Free Fire. Use gírias como 'capa', 'rush', 'squad'. `;
+  }
+
+  systemInstruction += `
+    REGRAS:
+    - Nível de dificuldade: ${difficulty}.
+    - Responda apenas em JSON válido.
+    - Se modo Verdadeiro/Falso, escolhas devem ser ["VERDADEIRO", "FALSO"].
+  `;
 
   try {
-    const response = await ai.models.generateContent({
+    // 1. Gerar Pergunta (Texto)
+    const textRes = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: prompt,
+      contents: `Gere uma pergunta de ${isTF ? 'Verdadeiro ou Falso' : 'múltipla escolha (4 opções)'} sobre: ${activeTopic}.`,
       config: {
-        systemInstruction: SYSTEM_PROMPT,
+        systemInstruction,
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -46,34 +55,37 @@ export const generateGameQuestion = async (
       }
     });
 
-    const data = JSON.parse(response.text || '{}');
+    const data = JSON.parse(textRes.text || '{}');
+    if (isTF) data.choices = ["VERDADEIRO", "FALSO"];
 
-    // Geração de Imagem Temática
+    // 2. Gerar Imagem (Opcional - tenta mas não trava se falhar)
     let imageUrl = '';
     try {
       const imgRes = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
-        contents: `Epic high-resolution eSports digital art, Free Fire theme, hyper-realistic, action-packed lighting, relating to: ${data.text}. Cinematic composition.`,
-        config: {
-          imageConfig: { aspectRatio: "16:9" }
-        }
+        contents: `Arte vibrante de quiz sobre ${activeTopic}: ${data.text}`,
+        config: { imageConfig: { aspectRatio: "16:9" } }
       });
-
-      if (imgRes.candidates?.[0]?.content?.parts) {
-        for (const part of imgRes.candidates[0].content.parts) {
-          if (part.inlineData) {
-            imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-            break;
-          }
-        }
-      }
+      const part = imgRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+      if (part?.inlineData) imageUrl = `data:image/png;base64,${part.inlineData.data}`;
     } catch (e) {
-      console.warn("Imagem não gerada, usando fallback.");
+      console.warn("Imagem não gerada devido a quota.");
     }
 
     return { node: data, imageUrl };
-  } catch (err) {
-    console.error("Erro Gemini:", err);
-    throw err;
+
+  } catch (err: any) {
+    console.error("Gemini Error:", err);
+    const isQuota = err?.message?.includes('429');
+    return {
+      node: {
+        text: isQuota 
+          ? `[LIMITE ATINGIDO] Aguarde um instante para a próxima pergunta sobre ${activeTopic}.` 
+          : `Erro ao gerar pergunta sobre ${activeTopic}. Quer tentar de novo?`,
+        choices: ["TENTAR NOVAMENTE", "MUDAR TEMA", "SAIR", "AGUARDAR"],
+        correctAnswerIndex: 0
+      },
+      imageUrl: ''
+    };
   }
 };

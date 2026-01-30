@@ -13,13 +13,14 @@ let userChannel: RealtimeChannel | null = null;
 const handleSupabaseError = (error: any) => {
   console.error("Supabase Error Details:", error);
   if (error?.code === 'PGRST204' || error?.code === '42703') {
-    return 'Erro de Schema: Algumas colunas (como total_score ou avatar_url) não foram encontradas. Execute o setup.sql no SQL Editor do Supabase para corrigir.';
+    return 'SCHEMA_ERROR';
   }
-  return error?.message || 'Erro de conexão com o servidor';
+  return error?.message || 'Erro de conexão';
 };
 
 /**
- * Salva ou atualiza o perfil básico do usuário
+ * Cria ou atualiza o perfil. 
+ * Se for um novo usuário, usa os dados fornecidos.
  */
 export const upsertProfile = async (userId: string, name: string, avatarUrl?: string) => {
   try {
@@ -39,16 +40,17 @@ export const upsertProfile = async (userId: string, name: string, avatarUrl?: st
   }
 };
 
-/**
- * Atualiza estatísticas do jogador após a partida
- */
 export const incrementPlayerStats = async (userId: string, score: number, isWin: boolean) => {
-  if (userId.startsWith('guest_')) return { success: true }; // Não salva stats de convidados
+  if (userId.startsWith('guest_')) return { success: true };
 
   try {
-    // Primeiro pegamos os valores atuais
-    const { data: profile } = await supabase.from('profiles').select('wins, matches, total_score').eq('id', userId).single();
+    const { data: profile, error: fetchError } = await supabase.from('profiles').select('wins, matches, total_score').eq('id', userId).single();
     
+    if (fetchError && (fetchError.code === 'PGRST204' || fetchError.code === '42703')) {
+       console.warn("Estatísticas não salvas: Schema do banco desatualizado.");
+       return { success: true }; 
+    }
+
     if (!profile) return { error: 'Perfil não encontrado' };
 
     const { error } = await supabase
@@ -68,8 +70,12 @@ export const incrementPlayerStats = async (userId: string, score: number, isWin:
   }
 };
 
+/**
+ * Atualiza o perfil no banco E no metadado do Auth para evitar que o avatar mude ao relogar.
+ */
 export const updateProfileData = async (userId: string, data: { name?: string, avatar_url?: string }) => {
   try {
+    // 1. Atualizar tabela profiles
     const payload = {
       id: userId,
       last_seen: new Date().toISOString(),
@@ -77,11 +83,22 @@ export const updateProfileData = async (userId: string, data: { name?: string, a
       ...(data.avatar_url && { avatar_url: data.avatar_url })
     };
 
-    const { error } = await supabase
+    const { error: dbError } = await supabase
       .from('profiles')
       .upsert(payload, { onConflict: 'id' });
     
-    if (error) throw error;
+    if (dbError) throw dbError;
+
+    // 2. Atualizar Metadata do Auth (Isso faz o avatar persistir no login)
+    const { error: authError } = await supabase.auth.updateUser({
+      data: {
+        name: data.name?.toUpperCase(),
+        avatar_url: data.avatar_url
+      }
+    });
+
+    if (authError) console.warn("Erro ao atualizar metadados do Auth:", authError.message);
+
     return { success: true };
   } catch (e: any) {
     return { error: handleSupabaseError(e) };
@@ -99,7 +116,8 @@ export const fetchGlobalRanking = async () => {
     if (error) throw error;
     return { data: data || [], error: null };
   } catch (e: any) {
-    return { data: [], error: handleSupabaseError(e) };
+    const errType = handleSupabaseError(e);
+    return { data: [], error: errType === 'SCHEMA_ERROR' ? 'BANCO_DESATUALIZADO' : errType };
   }
 };
 
@@ -176,7 +194,7 @@ export const fetchFriendsList = async (userId: string): Promise<{ data: Friend[]
 
     const friends = (data || []).map((f: any) => ({
       id: String(f.profiles?.id || f.friend_id),
-      name: String(f.profiles?.name || "Operador Desconhecido"),
+      name: String(f.profiles?.name || "Operador"),
       avatar: f.profiles?.avatar_url,
       status: 'online' as 'online'
     }));
@@ -204,7 +222,7 @@ export const joinRoomChannel = (
     })
     .subscribe((status) => {
       if (status === 'SUBSCRIBED') resolve(activeChannel!);
-      if (status === 'CHANNEL_ERROR') reject(new Error("Falha ao sintonizar frequência"));
+      if (status === 'CHANNEL_ERROR') reject(new Error("Falha no Realtime"));
     });
   });
 };
