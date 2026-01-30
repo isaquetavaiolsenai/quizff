@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Quiz Squad</title>
     <script>
-        // Define o ambiente para compatibilidade
+        // Define o ambiente para compatibilidade com bibliotecas
         window.process = { env: { API_KEY: "" } };
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
@@ -59,7 +59,7 @@
 <body>
     <div id="initial-loader">
         <div class="spinner"></div>
-        <p id="loader-text" style="letter-spacing: 0.4em; font-size: 10px; font-weight: 900; color: #3B82F6; text-transform: uppercase; margin: 0; animation: pulse 2s infinite;">Sincronizando Squad</p>
+        <p id="loader-text" style="letter-spacing: 0.4em; font-size: 10px; font-weight: 900; color: #3B82F6; text-transform: uppercase; margin: 0; animation: pulse 2s infinite;">Iniciando Squad</p>
     </div>
     <div id="root"></div>
     <script type="module" src="./index.tsx"></script>

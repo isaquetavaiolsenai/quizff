@@ -36,11 +36,10 @@ const injectStyles = () => {
   document.head.appendChild(style);
 };
 
-const init = () => {
-  injectStyles();
+const renderApp = () => {
   const container = document.getElementById('root');
-  
   if (container) {
+    injectStyles();
     const root = ReactDOM.createRoot(container);
     root.render(
       <React.StrictMode>
@@ -48,7 +47,7 @@ const init = () => {
       </React.StrictMode>
     );
 
-    // Remove o loader inicial após a montagem
+    // Remove o loader assim que o React começar a trabalhar
     const loader = document.getElementById('initial-loader');
     if (loader) {
       loader.style.opacity = '0';
@@ -57,9 +56,9 @@ const init = () => {
   }
 };
 
-// Garante que o DOM está pronto antes de iniciar
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
+// Inicialização segura
+if (document.readyState === 'complete' || document.readyState === 'interactive') {
+  renderApp();
 } else {
-  init();
+  document.addEventListener('DOMContentLoaded', renderApp);
 }
