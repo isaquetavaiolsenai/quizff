@@ -36,7 +36,7 @@ const injectStyles = () => {
   document.head.appendChild(style);
 };
 
-const render = () => {
+const init = () => {
   const rootElement = document.getElementById('root');
   if (rootElement) {
     injectStyles();
@@ -46,19 +46,11 @@ const render = () => {
         <App />
       </React.StrictMode>
     );
-
-    // Fade out and remove the splash screen
-    const loader = document.getElementById('initial-loader');
-    if (loader) {
-      loader.style.opacity = '0';
-      setTimeout(() => loader.remove(), 500);
-    }
   }
 };
 
-// Start the app
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', render);
+  document.addEventListener('DOMContentLoaded', init);
 } else {
-  render();
+  init();
 }
