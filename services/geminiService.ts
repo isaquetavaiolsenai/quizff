@@ -1,10 +1,11 @@
+import { GoogleGenAI, Type } from "@google/genai";
 import { StoryNode, DifficultyLevel, GameMode } from "../types.ts";
 
 const DEFAULT_TOPICS = [
-  "Free Fire: Personagens e Habilidades",
-  "Free Fire: Mapas e Estratégias",
-  "Free Fire: Atributos de Armas",
-  "Free Fire: Lore e Curiosidades"
+  "Curiosidades de Free Fire",
+  "Estratégias de Battle Royale",
+  "História dos Games",
+  "Cultura Pop e Anime"
 ];
 
 export const generateGameQuestion = async (
@@ -13,64 +14,66 @@ export const generateGameQuestion = async (
   gameMode: GameMode = 'Quiz',
   customTopic: string | null = null
 ): Promise<{ node: StoryNode, imageUrl: string }> => {
-  // Access the API key from the environment
-  const apiKey = process.env.API_KEY || "";
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
   
   const isCustom = !!customTopic && customTopic.trim().length > 0;
   const activeTopic = isCustom ? customTopic.trim() : DEFAULT_TOPICS[Math.floor(Math.random() * DEFAULT_TOPICS.length)];
   const isTF = gameMode === 'TrueFalse';
 
-  const systemInstruction = `Você é um motor de jogo de Quiz inteligente e rápido. 
-    ${isCustom ? `O tema atual é: "${activeTopic}".` : `O tema é Free Fire. Use termos técnicos do jogo.`}
-    REGRAS:
-    - Nível de dificuldade: ${difficulty}.
-    - Se modo Verdadeiro/Falso, escolhas devem ser ["VERDADEIRO", "FALSO"].
-    - Responda OBRIGATORIAMENTE em JSON puro no formato:
-    { "text": "pergunta", "choices": ["opção1", "opção2", ...], "correctAnswerIndex": 0 }
-  `;
+  const prompt = `Gere uma pergunta de quiz desafiadora sobre o tema: "${activeTopic}".
+    Dificuldade: ${difficulty}.
+    Modo: ${isTF ? 'Verdadeiro ou Falso' : 'Múltipla Escolha'}.
+    Se for Verdadeiro ou Falso, as opções DEVEM ser exatamente ["VERDADEIRO", "FALSO"].`;
 
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": window.location.origin,
-        "X-Title": "Quiz Squad Battle"
-      },
-      body: JSON.stringify({
-        model: "z-ai/glm-4.5-air:free",
-        messages: [
-          { role: "system", content: systemInstruction },
-          { role: "user", content: `Gere uma pergunta de ${isTF ? 'Verdadeiro ou Falso' : 'múltipla escolha'} sobre: ${activeTopic}.` }
-        ],
-        response_format: { type: "json_object" }
-      })
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            text: { 
+              type: Type.STRING, 
+              description: "A pergunta a ser feita ao jogador." 
+            },
+            choices: { 
+              type: Type.ARRAY, 
+              items: { type: Type.STRING },
+              description: isTF ? "Sempre ['VERDADEIRO', 'FALSO']" : "4 opções de resposta únicas."
+            },
+            correctAnswerIndex: { 
+              type: Type.INTEGER, 
+              description: "Índice de 0 a 3 da resposta correta." 
+            }
+          },
+          required: ["text", "choices", "correctAnswerIndex"]
+        }
+      }
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error?.message || `Status HTTP: ${response.status}`);
-    }
+    const text = response.text;
+    if (!text) throw new Error("Resposta vazia da IA");
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
-    
-    if (!content) throw new Error("A IA retornou um conteúdo vazio.");
-    
-    const questionNode = JSON.parse(content);
-    
-    if (isTF) questionNode.choices = ["VERDADEIRO", "FALSO"];
+    const questionNode: StoryNode = JSON.parse(text);
+
+    // Sanitização para garantir compatibilidade com modos de jogo
+    if (isTF) {
+      questionNode.choices = ["VERDADEIRO", "FALSO"];
+      if (questionNode.correctAnswerIndex > 1) questionNode.correctAnswerIndex = 0;
+    }
 
     return { node: questionNode, imageUrl: '' };
 
   } catch (err: any) {
-    console.error("OpenRouter API Error:", err);
+    console.error("Gemini SDK Error:", err);
+    // Fallback amigável em caso de erro
     return {
       node: {
-        text: `Erro de conexão com OpenRouter: ${err.message}. Certifique-se de que a chave API está configurada corretamente.`,
-        choices: ["TENTAR NOVAMENTE", "CANCELAR"],
-        correctAnswerIndex: 0
+        text: `Qual destes itens é essencial no Free Fire? (IA offline: ${err.message})`,
+        choices: ["KIT MÉDICO", "GELO", "MUNIÇÃO", "COLETE"],
+        correctAnswerIndex: 1
       },
       imageUrl: ''
     };

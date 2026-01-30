@@ -36,16 +36,33 @@ const injectStyles = () => {
   document.head.appendChild(style);
 };
 
+const removeLoader = () => {
+  const loader = document.getElementById('initial-loader');
+  if (loader) {
+    loader.style.opacity = '0';
+    setTimeout(() => {
+      if (loader.parentNode) loader.remove();
+    }, 500);
+  }
+};
+
 const init = () => {
   const rootElement = document.getElementById('root');
   if (rootElement) {
-    injectStyles();
-    const root = ReactDOM.createRoot(rootElement);
-    root.render(
-      <React.StrictMode>
-        <App />
-      </React.StrictMode>
-    );
+    try {
+      injectStyles();
+      const root = ReactDOM.createRoot(rootElement);
+      root.render(
+        <React.StrictMode>
+          <App />
+        </React.StrictMode>
+      );
+      // Ensure the splash screen is removed after rendering starts
+      removeLoader();
+    } catch (error) {
+      console.error("Erro ao inicializar o React:", error);
+      removeLoader();
+    }
   }
 };
 
