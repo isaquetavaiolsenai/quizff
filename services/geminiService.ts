@@ -1,4 +1,3 @@
-
 import { StoryNode, DifficultyLevel, GameMode } from "../types.ts";
 
 const DEFAULT_TOPICS = [
@@ -14,8 +13,8 @@ export const generateGameQuestion = async (
   gameMode: GameMode = 'Quiz',
   customTopic: string | null = null
 ): Promise<{ node: StoryNode, imageUrl: string }> => {
-  // A chave API deve estar no process.env.API_KEY injetado pelo ambiente
-  const apiKey = (window as any).process?.env?.API_KEY || "";
+  // Access the API key from the environment
+  const apiKey = process.env.API_KEY || "";
   
   const isCustom = !!customTopic && customTopic.trim().length > 0;
   const activeTopic = isCustom ? customTopic.trim() : DEFAULT_TOPICS[Math.floor(Math.random() * DEFAULT_TOPICS.length)];
@@ -50,12 +49,15 @@ export const generateGameQuestion = async (
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error?.message || "Falha na API");
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error?.message || `Status HTTP: ${response.status}`);
     }
 
     const data = await response.json();
-    const content = data.choices[0].message.content;
+    const content = data.choices?.[0]?.message?.content;
+    
+    if (!content) throw new Error("A IA retornou um conteúdo vazio.");
+    
     const questionNode = JSON.parse(content);
     
     if (isTF) questionNode.choices = ["VERDADEIRO", "FALSO"];
@@ -66,7 +68,7 @@ export const generateGameQuestion = async (
     console.error("OpenRouter API Error:", err);
     return {
       node: {
-        text: `Erro ao conectar com OpenRouter: ${err.message}. Verifique sua chave API.`,
+        text: `Erro de conexão com OpenRouter: ${err.message}. Certifique-se de que a chave API está configurada corretamente.`,
         choices: ["TENTAR NOVAMENTE", "CANCELAR"],
         correctAnswerIndex: 0
       },
