@@ -1,5 +1,4 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
 import { StoryNode, DifficultyLevel, GameMode } from "../types.ts";
 
 const DEFAULT_TOPICS = [
@@ -15,72 +14,60 @@ export const generateGameQuestion = async (
   gameMode: GameMode = 'Quiz',
   customTopic: string | null = null
 ): Promise<{ node: StoryNode, imageUrl: string }> => {
-  // Verificação de segurança para o ambiente do navegador
+  // A chave API deve estar no process.env.API_KEY injetado pelo ambiente
   const apiKey = (window as any).process?.env?.API_KEY || "";
-  
-  const ai = new GoogleGenAI({ apiKey: apiKey });
   
   const isCustom = !!customTopic && customTopic.trim().length > 0;
   const activeTopic = isCustom ? customTopic.trim() : DEFAULT_TOPICS[Math.floor(Math.random() * DEFAULT_TOPICS.length)];
   const isTF = gameMode === 'TrueFalse';
 
-  let systemInstruction = `Você é um motor de jogo de Quiz inteligente. `;
-  if (isCustom) {
-    systemInstruction += `O tema atual é: "${activeTopic}". Esqueça Free Fire e foque apenas neste assunto. `;
-  } else {
-    systemInstruction += `O tema é Free Fire. Use gírias como 'capa', 'rush', 'squad'. `;
-  }
-
-  systemInstruction += `
+  const systemInstruction = `Você é um motor de jogo de Quiz inteligente e rápido. 
+    ${isCustom ? `O tema atual é: "${activeTopic}".` : `O tema é Free Fire. Use termos técnicos do jogo.`}
     REGRAS:
     - Nível de dificuldade: ${difficulty}.
-    - Responda apenas em JSON válido.
     - Se modo Verdadeiro/Falso, escolhas devem ser ["VERDADEIRO", "FALSO"].
+    - Responda OBRIGATORIAMENTE em JSON puro no formato:
+    { "text": "pergunta", "choices": ["opção1", "opção2", ...], "correctAnswerIndex": 0 }
   `;
 
   try {
-    const textRes = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `Gere uma pergunta de ${isTF ? 'Verdadeiro ou Falso' : 'múltipla escolha (4 opções)'} sobre: ${activeTopic}.`,
-      config: {
-        systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            text: { type: Type.STRING },
-            choices: { type: Type.ARRAY, items: { type: Type.STRING } },
-            correctAnswerIndex: { type: Type.INTEGER }
-          },
-          required: ["text", "choices", "correctAnswerIndex"]
-        }
-      }
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": window.location.origin,
+        "X-Title": "Quiz Squad Battle"
+      },
+      body: JSON.stringify({
+        model: "z-ai/glm-4.5-air:free",
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: `Gere uma pergunta de ${isTF ? 'Verdadeiro ou Falso' : 'múltipla escolha'} sobre: ${activeTopic}.` }
+        ],
+        response_format: { type: "json_object" }
+      })
     });
 
-    const data = JSON.parse(textRes.text || '{}');
-    if (isTF) data.choices = ["VERDADEIRO", "FALSO"];
-
-    let imageUrl = '';
-    try {
-      const imgRes = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: `Arte vibrante de quiz sobre ${activeTopic}: ${data.text}`,
-        config: { imageConfig: { aspectRatio: "16:9" } }
-      });
-      const part = imgRes.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-      if (part?.inlineData) imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-    } catch (e) {
-      console.warn("Imagem não gerada.");
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error?.message || "Falha na API");
     }
 
-    return { node: data, imageUrl };
+    const data = await response.json();
+    const content = data.choices[0].message.content;
+    const questionNode = JSON.parse(content);
+    
+    if (isTF) questionNode.choices = ["VERDADEIRO", "FALSO"];
+
+    return { node: questionNode, imageUrl: '' };
 
   } catch (err: any) {
-    console.error("Gemini Error:", err);
+    console.error("OpenRouter API Error:", err);
     return {
       node: {
-        text: `Erro ao gerar desafio. Verifique sua conexão.`,
-        choices: ["TENTAR NOVAMENTE", "SAIR"],
+        text: `Erro ao conectar com OpenRouter: ${err.message}. Verifique sua chave API.`,
+        choices: ["TENTAR NOVAMENTE", "CANCELAR"],
         correctAnswerIndex: 0
       },
       imageUrl: ''

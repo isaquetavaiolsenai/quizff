@@ -2,7 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.tsx';
 
-// Injeção de Estilos Globais
+// Global styles for the app's aesthetic
 const injectStyles = () => {
   if (document.getElementById('squad-styles')) return;
   const style = document.createElement('style');
@@ -36,18 +36,18 @@ const injectStyles = () => {
   document.head.appendChild(style);
 };
 
-const renderApp = () => {
-  const container = document.getElementById('root');
-  if (container) {
+const render = () => {
+  const rootElement = document.getElementById('root');
+  if (rootElement) {
     injectStyles();
-    const root = ReactDOM.createRoot(container);
+    const root = ReactDOM.createRoot(rootElement);
     root.render(
       <React.StrictMode>
         <App />
       </React.StrictMode>
     );
 
-    // Remove o loader assim que o React começar a trabalhar
+    // Fade out and remove the splash screen
     const loader = document.getElementById('initial-loader');
     if (loader) {
       loader.style.opacity = '0';
@@ -56,9 +56,9 @@ const renderApp = () => {
   }
 };
 
-// Inicialização segura
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
-  renderApp();
+// Start the app
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', render);
 } else {
-  document.addEventListener('DOMContentLoaded', renderApp);
+  render();
 }
